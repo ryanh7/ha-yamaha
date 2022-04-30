@@ -1,0 +1,7 @@
+{
+  "name": "Yamaha",
+  "homeassistant": "0.115.0",
+  "country": "CN",
+  "domains": ["media_player"],
+  "render_readme": true
+}

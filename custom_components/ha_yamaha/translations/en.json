@@ -1,0 +1,13 @@
+{
+    "config": {
+        "step": {
+            "user": {
+                "data": {
+                    "name": "Name",
+                    "host": "Host"
+                },
+                "title": "Yamaha"
+            }
+        }
+    }
+}
