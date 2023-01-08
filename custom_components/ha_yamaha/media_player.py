@@ -5,8 +5,8 @@ import logging
 
 import requests
 import rxv
-import voluptuous as vol
-
+from dataclasses import dataclass
+from typing import Any
 from homeassistant.components.media_player import MediaPlayerEntity
 from homeassistant.components.media_player.const import (
     MEDIA_TYPE_MUSIC,
@@ -33,9 +33,8 @@ from homeassistant.const import (
     STATE_UNAVAILABLE,
 )
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import config_validation as cv, entity_platform
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
+from homeassistant.helpers.restore_state import ExtraStoredData, RestoreEntity
 from homeassistant.config_entries import ConfigEntry
 
 from .const import (
@@ -45,12 +44,10 @@ from .const import (
     CURSOR_TYPE_RIGHT,
     CURSOR_TYPE_SELECT,
     CURSOR_TYPE_UP,
-    SERVICE_ENABLE_OUTPUT,
-    SERVICE_MENU_CURSOR,
-    SERVICE_SELECT_SCENE,
 )
 
 _LOGGER = logging.getLogger(__name__)
+logging.getLogger("rxv").setLevel(logging.FATAL)
 
 ATTR_CURSOR = "cursor"
 ATTR_ENABLED = "enabled"
@@ -87,6 +84,7 @@ SUPPORT_YAMAHA = (
     | SUPPORT_SELECT_SOUND_MODE
 )
 
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -98,7 +96,41 @@ async def async_setup_entry(
     )])
 
 
-class YamahaDevice(MediaPlayerEntity):
+@dataclass
+class YamahaExtraStoredData(ExtraStoredData):
+    native_volume: float
+    native_muted: bool
+    native_source: Any
+    native_source_list: Any
+    native_sound_mode: Any
+    native_sound_mode_list: Any
+    native_supported_features: Any
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "native_volume": self.native_volume,
+            "native_muted": self.native_muted,
+            "native_source": self.native_source,
+            "native_source_list": self.native_source_list,
+            "native_sound_mode": self.native_sound_mode,
+            "native_sound_mode_list": self.native_sound_mode_list,
+            "native_supported_features": self.native_supported_features
+        }
+
+    @classmethod
+    def from_dict(cls, restored: dict[str, Any]) -> YamahaExtraStoredData | None:
+        return cls(
+            restored.get("native_volume"),
+            restored.get("native_muted"),
+            restored.get("native_source"),
+            restored.get("native_source_list"),
+            restored.get("native_sound_mode"),
+            restored.get("native_sound_mode_list"),
+            restored.get("native_supported_features"),
+        )
+
+
+class YamahaDevice(MediaPlayerEntity, RestoreEntity):
     """Representation of a Yamaha device."""
 
     def __init__(self, hass, name, host, source_ignore=None, source_names=None, zone_names=None):
@@ -122,6 +154,35 @@ class YamahaDevice(MediaPlayerEntity):
         self._is_playback_supported = False
         self._play_status = None
         self._zone = None
+        self._supported_features = None
+
+    @property
+    def extra_restore_state_data(self):
+        """Return number specific state data to be restored."""
+        return YamahaExtraStoredData(
+            self._volume,
+            self._muted,
+            self._current_source,
+            self._source_list,
+            self._sound_mode,
+            self._sound_mode_list,
+            self.supported_features,
+        )
+
+    async def async_added_to_hass(self) -> None:
+        """Restore last state."""
+        if ((restored_last_extra_data := await self.async_get_last_extra_data())):
+            data = YamahaExtraStoredData.from_dict(
+                restored_last_extra_data.as_dict())
+            self._volume = data.native_volume
+            self._muted = data.native_muted
+            self._current_source = data.native_source
+            self._source_list = data.native_source_list
+            self._sound_mode = data.native_sound_mode
+            self._sound_mode_list = data.native_sound_mode_list
+            self._supported_features = data.native_supported_features
+
+        await super().async_added_to_hass()
 
     def update(self):
         """Get the latest details from the device."""
@@ -132,11 +193,11 @@ class YamahaDevice(MediaPlayerEntity):
                 self.receiver = receivers[0]
                 self._zone = self.receiver.zone
             self._play_status = self.receiver.play_status()
-        except requests.exceptions.ConnectionError:
-            _LOGGER.info("Receiver is offline: %s", self._name)
+        except (requests.exceptions.ConnectionError, requests.exceptions.ReadTimeout):
             self._pwstate = STATE_UNAVAILABLE
             return
-        except Exception:
+        except Exception as e:
+            _LOGGER.exception(e)
             self._pwstate = STATE_UNAVAILABLE
             return
 
@@ -182,7 +243,7 @@ class YamahaDevice(MediaPlayerEntity):
             for source in self.receiver.inputs()
             if source not in self._source_ignore
         )
-    
+
     @property
     def unique_id(self):
         return f"yamaha-{self.host}"
@@ -218,6 +279,11 @@ class YamahaDevice(MediaPlayerEntity):
         return self._current_source
 
     @property
+    def source_list(self):
+        """List of available input sources."""
+        return self._source_list
+
+    @property
     def sound_mode(self):
         """Return the current sound mode."""
         return self._sound_mode
@@ -226,11 +292,6 @@ class YamahaDevice(MediaPlayerEntity):
     def sound_mode_list(self):
         """Return the current sound mode."""
         return self._sound_mode_list
-
-    @property
-    def source_list(self):
-        """List of available input sources."""
-        return self._source_list
 
     @property
     def zone_id(self):
@@ -242,6 +303,9 @@ class YamahaDevice(MediaPlayerEntity):
     @property
     def supported_features(self):
         """Flag media player features that are supported."""
+        if self._playback_support is None:
+            return self._supported_features or SUPPORT_YAMAHA
+
         supported_features = SUPPORT_YAMAHA
 
         supports = self._playback_support
@@ -262,6 +326,8 @@ class YamahaDevice(MediaPlayerEntity):
         if self.receiver is None:
             return
         self.receiver.on = False
+        self.update()
+        self.async_write_ha_state()
 
     def set_volume_level(self, volume):
         """Set volume level, range 0..1."""
@@ -283,6 +349,8 @@ class YamahaDevice(MediaPlayerEntity):
             return
         self.receiver.on = True
         self._volume = (self.receiver.volume / 100) + 1
+        self.update()
+        self.async_write_ha_state()
 
     def media_play(self):
         """Send play command."""
