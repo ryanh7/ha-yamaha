@@ -1,5 +1,6 @@
 """Constants for the Yamaha component."""
 DOMAIN = "ha_yamaha"
+DEFAULT_NAME = "Yamaha Media Render"
 CURSOR_TYPE_DOWN = "down"
 CURSOR_TYPE_LEFT = "left"
 CURSOR_TYPE_RETURN = "return"

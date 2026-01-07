@@ -1,12 +1,23 @@
 {
     "config": {
         "step": {
+            "confirm": {
+                "description": "是否将 `{host}` 上的雅马哈设备连接至Home Assistant?",
+                "title": "雅马哈"
+            },
             "user": {
                 "data": {
                     "name": "名称",
                     "host": "主机地址"
                 },
                 "title": "雅马哈"
+            }
+        }
+    },
+    "entity": {
+        "media_player": {
+            "render": {
+                "name": "功放机"
             }
         }
     }

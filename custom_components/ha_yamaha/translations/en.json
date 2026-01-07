@@ -1,12 +1,23 @@
 {
     "config": {
         "step": {
+            "confirm": {
+                "description": "Do you want to add Yamaha Media Render on `{host}` to Home Assistant?",
+                "title": "Yamaha"
+            },
             "user": {
                 "data": {
                     "name": "Name",
                     "host": "Host"
                 },
                 "title": "Yamaha"
+            }
+        }
+    },
+    "entity": {
+        "media_player": {
+            "render": {
+                "name": "Render"
             }
         }
     }

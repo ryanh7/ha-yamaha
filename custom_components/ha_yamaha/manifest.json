@@ -3,8 +3,14 @@
   "name": "Yamaha",
   "config_flow": true,
   "documentation": "https://github.com/ryanh7/ha-yamaha",
-  "requirements": ["rxv==0.7.0"],
+  "requirements": [],
   "codeowners": ["ryanh7"],
   "iot_class": "local_polling",
-  "version": "1.0.0"
+  "version": "1.0.0",
+  "ssdp": [
+    {
+      "deviceType": "urn:schemas-upnp-org:device:MediaRenderer:1",
+      "manufacturer": "ARCAM"
+    }
+  ]
 }
