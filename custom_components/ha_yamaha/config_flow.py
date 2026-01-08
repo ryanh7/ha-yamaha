@@ -86,7 +86,6 @@ class YamahaFlowHandler(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Handle a discovered device."""
         host = str(urlparse(discovery_info.ssdp_location).hostname)
-        _LOGGER.error(f"find yamaha {host}, {discovery_info}")
 
         device_id = get_id_from_udn(discovery_info.upnp.get(ATTR_UPNP_UDN))
     
