@@ -194,10 +194,15 @@ class RXV(object):
     
     @property
     def device_id(self):
-        if self._device is None:
-            return None
-        
-        return self._device.device_id
+        return self._device.device_id if self._device else None
+    
+    @property
+    def friendly_name(self):
+        return self._device.friendly_name if self._device else None
+    
+    @property
+    def serial_number(self):
+        return self._device.serial_number if self._device else None
     
     async def async_setup(self):
         if self._store is None and self.entry_id is not None:

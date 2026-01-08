@@ -43,11 +43,6 @@ ATTR_PORT = "port"
 
 ATTR_SCENE = "scene"
 
-CONF_SOURCE_IGNORE = "source_ignore"
-CONF_SOURCE_NAMES = "source_names"
-CONF_ZONE_IGNORE = "zone_ignore"
-CONF_ZONE_NAMES = "zone_names"
-
 CURSOR_TYPE_MAP = {
     CURSOR_TYPE_DOWN: Cursor.DOWN,
     CURSOR_TYPE_LEFT: Cursor.LEFT,
@@ -139,18 +134,17 @@ class YamahaExtraStoredData(ExtraStoredData):
 class YamahaMediaPlayer(CoordinatorEntity[YamahaCoordinator], MediaPlayerEntity, RestoreEntity):
     """Representation of a Yamaha device."""
 
+    _attr_has_entity_name = True
+
     entity_description = MediaPlayerEntityDescription(
         key="render",
         translation_key="render",
         device_class=MediaPlayerDeviceClass.RECEIVER,
     )
 
-    def __init__(self, hass, coordinator: YamahaCoordinator, source_ignore=None, source_names=None, zone_names=None):
+    def __init__(self, hass, coordinator: YamahaCoordinator):
         """Initialize the Yamaha Receiver."""
         self.hass = hass
-        self._source_ignore = source_ignore or []
-        self._source_names = source_names or {}
-        self._zone_names = zone_names or {}
         self._zone = None
         self._supported_features = None
 
@@ -250,13 +244,6 @@ class YamahaMediaPlayer(CoordinatorEntity[YamahaCoordinator], MediaPlayerEntity,
         if (data:=self.coordinator.data) is None:
             return None
         return data.sound_mode_list
-
-    @property
-    def zone_id(self):
-        """Return a zone_id to ensure 1 media player per zone."""
-        if self.receiver is None:
-            return None
-        return f"{self.receiver.ctrl_url}:{self._zone}"
 
     @property
     def supported_features(self):

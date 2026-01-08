@@ -40,8 +40,8 @@ class YamahaCoordinator(DataUpdateCoordinator[YamahaData]):
         self.receiver = None
         self._source_list = None
 
-        self._source_names = {}
-        self._source_ignore = []
+        self._source_names = {} #frome config_entry
+        self._source_ignore = [] #fronm config_entry
 
     async def _async_update_data(self): 
         try:
@@ -53,18 +53,14 @@ class YamahaCoordinator(DataUpdateCoordinator[YamahaData]):
                 self.device_info = self.receiver.device_info
 
             basic_status = await self.receiver.async_get_basic_status()
-            #is_on = await self.receiver.async_is_on()
             is_on = basic_status.on
 
-            #current_input = await self.receiver.async_get_input()
             current_input = basic_status.input
 
             play_status = await self.receiver.async_get_play_status(current_input)
             playback_support = await self.receiver.async_get_playback_support(current_input)
 
-            #muted = await self.receiver.async_is_mute()
             muted = basic_status.mute
-            #volume = (await self.receiver.async_get_volume() / 100) + 1
             volume = (basic_status.volume / 100) + 1
 
             if self._source_list is None:
@@ -91,7 +87,6 @@ class YamahaCoordinator(DataUpdateCoordinator[YamahaData]):
         except (ConfigEntryAuthFailed,UpdateFailed) as error:
             raise error
         except Exception as error:
-            #_LOGGER.exception(error)
             raise UpdateFailed(error) from error
         
     async def _async_build_source_list(self):
