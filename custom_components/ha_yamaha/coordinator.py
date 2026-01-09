@@ -89,6 +89,10 @@ class YamahaCoordinator(DataUpdateCoordinator[YamahaData]):
         except Exception as error:
             raise UpdateFailed(error) from error
         
+    @property
+    def device_icon(self):
+        return self._rxv.icon
+        
     async def _async_build_source_list(self):
         """Build the source list."""
         self._reverse_mapping = {

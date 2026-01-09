@@ -4,7 +4,7 @@ import re
 from .const import DOMAIN
 
 
-STORAGE_VERSION = 1
+STORAGE_VERSION = 2
 
 
 def get_store(hass, config_entry_id: str) -> Store[str]:

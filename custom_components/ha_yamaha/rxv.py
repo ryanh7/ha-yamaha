@@ -10,6 +10,7 @@ from typing import TypeAlias
 import xml
 from collections import namedtuple
 from math import floor
+from urllib.parse import urljoin
 
 import aiohttp
 from defusedxml import cElementTree
@@ -135,6 +136,11 @@ SERIAL_NUMBER_QUERY = (
     "{urn:schemas-upnp-org:device-1-0}device"
     "/{urn:schemas-upnp-org:device-1-0}serialNumber"
 )
+LIST_ICON_QUERY = (
+    "{urn:schemas-upnp-org:device-1-0}device"
+    "/{urn:schemas-upnp-org:device-1-0}iconList"
+    "/{urn:schemas-upnp-org:device-1-0}icon"
+)
 
 Source: TypeAlias = str
 
@@ -145,6 +151,7 @@ class RXVDeviceinfo:
     manufacturer: str
     model_name: str
     serial_number: str
+    icons: list[str]
     zones: list[str]
     commands: list[str]
     surround_programs: dict[Source, list[str]]
@@ -173,6 +180,8 @@ class RXV(object):
         self._zone = zone
 
         self._device: RXVDeviceinfo | None = None
+
+        self.icon_list = []
 
     @property
     def device_info(self):
@@ -204,6 +213,10 @@ class RXV(object):
     def serial_number(self):
         return self._device.serial_number if self._device else None
     
+    @property
+    def icon(self):
+        return urljoin(f"http://{self.host}:8080", self._device.icons[0]) if self._device and self._device.icons else None
+    
     async def async_setup(self):
         if self._store is None and self.entry_id is not None:
             self._store = get_store(self.hass, self.entry_id)
@@ -217,6 +230,7 @@ class RXV(object):
                 await self._store.async_save(asdict(self._device))
 
     async def _async_discover_device_info(self) -> RXVDeviceinfo:
+        # 获取设备xml
         response = await self._session.get(
             self.deivce_desc_url, timeout=self._http_timeout
         )
@@ -233,6 +247,9 @@ class RXV(object):
         friendly_name = device_desc_xml.find(FRIENDLY_NAME_QUERY).text
         serial_number = device_desc_xml.find(SERIAL_NUMBER_QUERY).text
 
+        icons = self._build_icon_list(device_desc_xml)
+
+        # 获取控制描述xml
         response = await self._session.get(
             self.unit_desc_url, timeout=self._http_timeout
         )
@@ -258,6 +275,7 @@ class RXV(object):
             manufacturer=manufacturer,
             model_name=model_name,
             serial_number=serial_number,
+            icons=icons,
             zones=zones,
             commands=commands,
             surround_programs=surround_programs,
@@ -267,6 +285,27 @@ class RXV(object):
             scenes=scenes
         )
 
+    def _build_icon_list(self, desc_xml):
+        icons = [icon for icon in desc_xml.findall(LIST_ICON_QUERY)]
+        icon_data = []
+        for icon in icons:
+            width_elem = icon.find('.//{urn:schemas-upnp-org:device-1-0}width')
+            url_elem = icon.find('.//{urn:schemas-upnp-org:device-1-0}url')
+            
+            if url_elem is not None:
+                width = 0
+                if width_elem is not None:
+                    try:
+                        width = int(width_elem.text)
+                    except (ValueError, AttributeError):
+                        pass
+                
+                url = url_elem.text
+                icon_data.append((width, url))
+
+        icon_data.sort(key=lambda x: x[0], reverse=True)
+
+        return [url for _, url in icon_data]
 
     def _build_commands(self, desc_xml):
         return [item.text.split(",") for cmd in desc_xml.findall('.//Cmd_List/Define') for item in cmd]

@@ -63,7 +63,7 @@ SUPPORTS = (
     | MediaPlayerEntityFeature.TURN_ON
     | MediaPlayerEntityFeature.TURN_OFF
     | MediaPlayerEntityFeature.SELECT_SOURCE
-    | MediaPlayerEntityFeature.PLAY
+#    | MediaPlayerEntityFeature.PLAY
     | MediaPlayerEntityFeature.SELECT_SOUND_MODE
 )
 
@@ -77,24 +77,6 @@ async def async_setup_entry(
     async_add_entities([YamahaMediaPlayer(
         hass, coordinator
     )])
-
-    # added_entities = False
-
-    # @callback
-    # def _async_check_entities() -> None:
-    #     nonlocal added_entities
-
-    #     if (
-    #         not added_entities
-    #         #and coordinator.receiver is not None
-    #     ):
-    #         async_add_entities([YamahaMediaPlayer(
-    #             hass, coordinator
-    #         )])
-    #         added_entities = True
-
-    # coordinator.async_add_listener(_async_check_entities)
-    # _async_check_entities()
 
 
 @dataclass
@@ -393,3 +375,16 @@ class YamahaMediaPlayer(CoordinatorEntity[YamahaCoordinator], MediaPlayerEntity,
                 return f"{station}: {song}"
 
             return song or station
+    
+    @property
+    def media_image_url(self) -> str | None:
+        """Image url of current playing media."""
+        data = self.coordinator.data
+        if data is None:
+            return None
+            
+        album = None 
+        if data.play_status is not None:
+            album = self.coordinator.data.play_status.album
+
+        return album or self.coordinator.device_icon
