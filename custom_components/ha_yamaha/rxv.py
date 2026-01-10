@@ -142,8 +142,6 @@ LIST_ICON_QUERY = (
     "/{urn:schemas-upnp-org:device-1-0}icon"
 )
 
-Source: TypeAlias = str
-
 @dataclass
 class RXVDeviceinfo:
     device_id: str
@@ -154,9 +152,9 @@ class RXVDeviceinfo:
     icons: list[str]
     zones: list[str]
     commands: list[str]
-    surround_programs: dict[Source, list[str]]
-    play_methods: dict[Source, list[str]]
-    cursor_actions: dict[Source, list[str]]
+    zone_surround_programs: dict[str, list[str]]
+    source_play_methods: dict[str, list[str]]
+    source_cursor_actions: dict[str, list[str]]
     inputs_source: dict[str, str]
     scenes_number: dict[str, str]
 
@@ -190,8 +188,8 @@ class RXV(object):
 
         if self._device is None:
             return DeviceInfo(
-            identifiers={(DOMAIN, self.entry_id)}
-        )
+                identifiers={(DOMAIN, self.entry_id)}
+            )
 
         return DeviceInfo(
             identifiers={(DOMAIN, self.entry_id)},
@@ -261,9 +259,9 @@ class RXV(object):
 
         zones = self._build_zones(unit_desc_xml)
         commands = self._build_commands(unit_desc_xml)
-        surround_programs = self._build_surround_programs(unit_desc_xml)
-        play_methods = self._build_play_methods(unit_desc_xml)
-        cursor_actions = self._build_supported_cursor_actions(unit_desc_xml)
+        zone_surround_programs = self._build_surround_programs(unit_desc_xml)
+        source_play_methods = self._build_play_methods(unit_desc_xml)
+        source_cursor_actions = self._build_supported_cursor_actions(unit_desc_xml)
 
         inputs = await self._async_get_inputs()
 
@@ -278,9 +276,9 @@ class RXV(object):
             icons=icons,
             zones=zones,
             commands=commands,
-            surround_programs=surround_programs,
-            play_methods=play_methods,
-            cursor_actions=cursor_actions,
+            zone_surround_programs=zone_surround_programs,
+            source_play_methods=source_play_methods,
+            source_cursor_actions=source_cursor_actions,
             inputs_source=inputs,
             scenes_number=scenes
         )
@@ -316,7 +314,7 @@ class RXV(object):
         ]
 
     def _build_play_methods(self, desc_xml):
-        play_methods = {}
+        source_play_methods = {}
         
         # 查找所有具有YNC_Tag属性的元素
         for source_elem in desc_xml.findall('.//*[@YNC_Tag]'):
@@ -333,12 +331,12 @@ class RXV(object):
             if len(methods) == 0:
                 continue
 
-            play_methods[source] = methods
+            source_play_methods[source] = methods
 
-        return play_methods
+        return source_play_methods
     
     def _build_supported_cursor_actions(self, desc_xml):
-        supported_cursor_actions = {}
+        source_cursor_actions = {}
         
         # 查找所有具有YNC_Tag属性的元素
         for source_elem in desc_xml.findall('.//*[@YNC_Tag]'):
@@ -355,9 +353,9 @@ class RXV(object):
             if len(actions) == 0:
                 continue
 
-            supported_cursor_actions[source] = actions
+            source_cursor_actions[source] = actions
         
-        return supported_cursor_actions
+        return source_cursor_actions
     
     def _build_surround_programs(self, desc_xml):
         zone_surround_programs = {}
@@ -367,31 +365,27 @@ class RXV(object):
             if not zone:
                 continue
 
-            surround_programs = []
-
             setup = source_xml.find('.//Menu[@Title_1="Setup"]')
             if setup is None:
                 continue
 
-            programs = setup.find('.//*[@Title_1="Program"]/Put_2/Param_1')
-            if programs is None:
-                continue
-
-            supports = programs.findall('.//Direct')
-
-            for s in supports:
-                surround_programs.append(s.text)
-
-            straight = setup.find('.//*[@Title_1="Straight"]/Put_1')
-            if straight is not None:
-                surround_programs.append(STRAIGHT)
+            surround_programs = []
 
             direct = setup.find('.//*[@Title_1="Direct"]/Put_1')
             if direct is not None:
                 surround_programs.append(DIRECT)
             
-            if len(direct) > 0:
-                zone_surround_programs[zone] = direct
+            straight = setup.find('.//*[@Title_1="Straight"]/Put_1')
+            if straight is not None:
+                surround_programs.append(STRAIGHT)
+
+            programs = setup.find('.//*[@Title_1="Program"]/Put_2/Param_1')
+            if programs is not None:
+                supports = programs.findall('.//Direct')
+                for s in supports:
+                    surround_programs.append(s.text)
+            
+            zone_surround_programs[zone] = surround_programs
         
         return zone_surround_programs
     
@@ -573,7 +567,7 @@ class RXV(object):
         """
         Current state of direct mode.
         """
-        if DIRECT not in self._device.surround_programs.get(self.zone, []):
+        if DIRECT not in self._device.zone_surround_programs.get(self.zone, []):
             return False
 
         request_text = DirectMode.format(parameter="<Mode>GetParam</Mode>")
@@ -590,7 +584,7 @@ class RXV(object):
 
         Precondition: DIRECT mode is supported, raises AssertionError otherwise.
         """
-        assert DIRECT in self._device.surround_programs.get(self.zone, [])
+        assert DIRECT in self._device.zone_surround_programs.get(self.zone, [])
         if on:
             request_text = DirectMode.format(parameter="<Mode>On</Mode>")
         else:
@@ -598,7 +592,7 @@ class RXV(object):
         await self._async_request('PUT', request_text)
 
     def get_surround_programs(self):
-        return self._device.surround_programs
+        return self._device.zone_surround_programs.get(self.zone)
 
     async def async_get_surround_program(self):
         """
@@ -607,7 +601,7 @@ class RXV(object):
         If a STRAIGHT or DIRECT mode is supported and active, returns that mode.
         Otherwise returns the currently active surround program.
         """
-        if self.direct_mode:
+        if await self.async_get_direct_mode():
             return DIRECT
 
         request_text = SurroundProgram.format(parameter=GetParam)
@@ -626,17 +620,17 @@ class RXV(object):
         return program
 
     async def async_set_surround_program(self, surround_name):
-        assert surround_name in self._device.surround_programs.get(self.zone, [])
+        assert surround_name in self._device.zone_surround_programs.get(self.zone, [])
 
         # short circut on direct program
         if surround_name == DIRECT:
-            self.direct_mode = True
+            await self.async_set_direct_mode(True)
             return
 
-        if self.direct_mode:
+        if await self.async_get_direct_mode():
             # Disable direct mode before changing any other settings,
             # otherwise they don't have an effect
-            self.direct_mode = False
+            await self.async_set_direct_mode(False)
 
         if surround_name == STRAIGHT:
             parameter = "<Straight>On</Straight>"
@@ -686,7 +680,7 @@ class RXV(object):
         return False
 
     def supports_play_method(self, source, method):
-        return method in self._device.play_methods.get(source, {})
+        return method in self._device.source_play_methods.get(source, {})
 
     async def async_is_ready(self):
         src_name = await self._async_get_src_name()
@@ -787,7 +781,7 @@ class RXV(object):
             src_name = await self._async_get_src_name()
         if not src_name:
             return frozenset()
-        cursor_actions = self._device.cursor_actions.get(src_name)
+        cursor_actions = self._device.source_cursor_actions.get(src_name)
         if cursor_actions is None:
             return frozenset()
         return frozenset(action for action in cursor_actions)

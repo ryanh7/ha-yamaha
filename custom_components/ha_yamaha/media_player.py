@@ -24,7 +24,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import ExtraStoredData, RestoreEntity
 from homeassistant.config_entries import ConfigEntry
-from .coordinator import YamahaCoordinator
+from .coordinator import YamahaCoordinator, YamahaData
 from .rxv import Cursor
 from .const import (
     CURSOR_TYPE_DOWN,
@@ -230,23 +230,28 @@ class YamahaMediaPlayer(CoordinatorEntity[YamahaCoordinator], MediaPlayerEntity,
     @property
     def supported_features(self):
         """Flag media player features that are supported."""
-        data = self.coordinator.data
-        if data is None or data.playback_support is None:
-            return SUPPORTS
-
         supported_features = SUPPORTS
 
-        supports = data.playback_support
-        mapping = {
-            "play": (MediaPlayerEntityFeature.PLAY | MediaPlayerEntityFeature.PLAY_MEDIA),
-            "pause": MediaPlayerEntityFeature.PAUSE,
-            "stop": MediaPlayerEntityFeature.STOP,
-            "skip_f": MediaPlayerEntityFeature.NEXT_TRACK,
-            "skip_r": MediaPlayerEntityFeature.PREVIOUS_TRACK,
-        }
-        for attr, feature in mapping.items():
-            if getattr(supports, attr, False):
-                supported_features |= feature
+        data: YamahaData = self.coordinator.data
+        if data is None:
+            return supported_features
+        
+        if data.sound_mode_list:
+            supported_features |= MediaPlayerEntityFeature.SELECT_SOUND_MODE
+
+        if data.playback_support is None:
+            supports = data.playback_support
+            mapping = {
+                "play": (MediaPlayerEntityFeature.PLAY | MediaPlayerEntityFeature.PLAY_MEDIA),
+                "pause": MediaPlayerEntityFeature.PAUSE,
+                "stop": MediaPlayerEntityFeature.STOP,
+                "skip_f": MediaPlayerEntityFeature.NEXT_TRACK,
+                "skip_r": MediaPlayerEntityFeature.PREVIOUS_TRACK,
+            }
+            for attr, feature in mapping.items():
+                if getattr(supports, attr, False):
+                    supported_features |= feature
+
         return supported_features
 
     async def async_turn_on(self):
