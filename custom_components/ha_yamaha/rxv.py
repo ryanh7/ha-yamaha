@@ -157,8 +157,8 @@ class RXVDeviceinfo:
     surround_programs: dict[Source, list[str]]
     play_methods: dict[Source, list[str]]
     cursor_actions: dict[Source, list[str]]
-    inputs: dict[str, str]
-    scenes: dict[str, str]
+    inputs_source: dict[str, str]
+    scenes_number: dict[str, str]
 
 
 class RXV(object):
@@ -281,8 +281,8 @@ class RXV(object):
             surround_programs=surround_programs,
             play_methods=play_methods,
             cursor_actions=cursor_actions,
-            inputs=inputs,
-            scenes=scenes
+            inputs_source=inputs,
+            scenes_number=scenes
         )
 
     def _build_icon_list(self, desc_xml):
@@ -412,12 +412,12 @@ class RXV(object):
             return scenes
 
         for scene in scenes_xml:
-            scenes[scene.text] = scenes_xml.tag.replace("_", " ")
+            scenes[scene.text] = scene.tag.replace("_", " ")
 
         return scenes
     
     def get_inputs(self):
-        return self._device.inputs
+        return self._device.inputs_source
     
     async def _async_request(self, command, request_text, zone_cmd=True):
         if zone_cmd:
@@ -531,7 +531,7 @@ class RXV(object):
         return response.find("%s/Input/Input_Sel" % self.zone).text
 
     async def async_set_input(self, input_name):
-        assert input_name in self._device.inputs
+        assert input_name in self._device.inputs_source
         request_text = Input.format(input_name=input_name)
         await self._async_request('PUT', request_text)
 
@@ -653,8 +653,8 @@ class RXV(object):
         return response.find("%s/Scene/Scene_Sel" % self.zone).text
 
     async def async_set_scene(self, scene_name):
-        assert scene_name in self._device.scenes
-        scene_number = self._device.scenes.get(scene_name)
+        assert scene_name in self._device.scenes_number
+        scene_number = self._device.scenes_number.get(scene_name)
         request_text = Scene.format(parameter=scene_number)
         await self._async_request('PUT', request_text)
 
@@ -712,7 +712,7 @@ class RXV(object):
     async def _async_get_src_name(self, cur_input=None):
         if cur_input is None:
             cur_input = await self.async_get_input()
-        if cur_input not in self._device.inputs:
+        if cur_input not in self._device.inputs_source:
             return None, None
         if cur_input.upper().startswith('HDMI'):
             # CEC commands can be sent over the HDMI inputs to control devices
@@ -720,7 +720,7 @@ class RXV(object):
             # as menu cursor commands. Return the zone so these features
             # will be enabled.
             return self.zone, cur_input
-        return self._device.inputs.get(cur_input), cur_input
+        return self._device.inputs_source.get(cur_input), cur_input
 
     async def async_get_play_status(self, input_source=None):
 
