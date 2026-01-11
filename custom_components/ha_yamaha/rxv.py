@@ -370,14 +370,14 @@ class RXV(object):
                 continue
 
             surround_programs = []
-
-            direct = setup.find('.//*[@Title_1="Direct"]/Put_1')
-            if direct is not None:
-                surround_programs.append(DIRECT)
             
             straight = setup.find('.//*[@Title_1="Straight"]/Put_1')
             if straight is not None:
                 surround_programs.append(STRAIGHT)
+
+            direct = setup.find('.//*[@Title_1="Direct"]/Put_1')
+            if direct is not None:
+                surround_programs.append(DIRECT)
 
             programs = setup.find('.//*[@Title_1="Program"]/Put_2/Param_1')
             if programs is not None:
