@@ -6,7 +6,6 @@ from dataclasses import dataclass, asdict
 import logging
 import re
 import html
-from typing import TypeAlias
 import xml
 from collections import namedtuple
 from math import floor

@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import logging
 
-from dataclasses import dataclass
-from typing import Any
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.components.media_player import (
     MediaPlayerEntity,
@@ -20,42 +18,15 @@ from homeassistant.const import (
     STATE_PLAYING,
     STATE_UNAVAILABLE,
 )
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.restore_state import ExtraStoredData, RestoreEntity
+from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.config_entries import ConfigEntry
 from .coordinator import YamahaCoordinator, YamahaData
-from .rxv import Cursor
-from .const import (
-    CURSOR_TYPE_DOWN,
-    CURSOR_TYPE_LEFT,
-    CURSOR_TYPE_RETURN,
-    CURSOR_TYPE_RIGHT,
-    CURSOR_TYPE_SELECT,
-    CURSOR_TYPE_UP,
-)
+
 
 _LOGGER = logging.getLogger(__name__)
 
-ATTR_CURSOR = "cursor"
-ATTR_ENABLED = "enabled"
-ATTR_PORT = "port"
-
-ATTR_SCENE = "scene"
-
-CURSOR_TYPE_MAP = {
-    CURSOR_TYPE_DOWN: Cursor.DOWN,
-    CURSOR_TYPE_LEFT: Cursor.LEFT,
-    CURSOR_TYPE_RETURN: Cursor.RIGHT,
-    CURSOR_TYPE_RIGHT: Cursor.RIGHT,
-    CURSOR_TYPE_SELECT: Cursor.SEL,
-    CURSOR_TYPE_UP: Cursor.UP,
-}
-DATA_YAMAHA = "yamaha_known_receivers"
-DEFAULT_NAME = "Yamaha Receiver"
-
-STORAGE_KEY = "yamaha"
-STORAGE_VERSION = 1
 
 SUPPORTS = (
     MediaPlayerEntityFeature.VOLUME_SET
@@ -63,7 +34,6 @@ SUPPORTS = (
     | MediaPlayerEntityFeature.TURN_ON
     | MediaPlayerEntityFeature.TURN_OFF
     | MediaPlayerEntityFeature.SELECT_SOURCE
-#    | MediaPlayerEntityFeature.PLAY
     | MediaPlayerEntityFeature.SELECT_SOUND_MODE
 )
 
@@ -79,40 +49,6 @@ async def async_setup_entry(
     )])
 
 
-@dataclass
-class YamahaExtraStoredData(ExtraStoredData):
-    native_volume: float
-    native_muted: bool
-    native_source: Any
-    native_source_list: Any
-    native_sound_mode: Any
-    native_sound_mode_list: Any
-    native_supported_features: Any
-
-    def as_dict(self) -> dict[str, Any]:
-        return {
-            "native_volume": self.native_volume,
-            "native_muted": self.native_muted,
-            "native_source": self.native_source,
-            "native_source_list": self.native_source_list,
-            "native_sound_mode": self.native_sound_mode,
-            "native_sound_mode_list": self.native_sound_mode_list,
-            "native_supported_features": self.native_supported_features
-        }
-
-    @classmethod
-    def from_dict(cls, restored: dict[str, Any]) -> YamahaExtraStoredData | None:
-        return cls(
-            restored.get("native_volume"),
-            restored.get("native_muted"),
-            restored.get("native_source"),
-            restored.get("native_source_list"),
-            restored.get("native_sound_mode"),
-            restored.get("native_sound_mode_list"),
-            restored.get("native_supported_features"),
-        )
-
-
 class YamahaMediaPlayer(CoordinatorEntity[YamahaCoordinator], MediaPlayerEntity, RestoreEntity):
     """Representation of a Yamaha device."""
 
@@ -126,11 +62,8 @@ class YamahaMediaPlayer(CoordinatorEntity[YamahaCoordinator], MediaPlayerEntity,
 
     def __init__(self, hass, coordinator: YamahaCoordinator):
         """Initialize the Yamaha Receiver."""
-        self.hass = hass
-        self._zone = None
-        self._supported_features = None
-
         super().__init__(coordinator)
+        self.hass = hass
         self._attr_unique_id = (
             f"{coordinator.config_entry.entry_id}_media_player"
         )
@@ -138,35 +71,6 @@ class YamahaMediaPlayer(CoordinatorEntity[YamahaCoordinator], MediaPlayerEntity,
     @property
     def device_info(self):
         return self.coordinator.device_info
-
-    @property
-    def extra_restore_state_data(self):
-        """Return number specific state data to be restored."""
-        return YamahaExtraStoredData(
-            self.volume_level,
-            self.is_volume_muted,
-            self.source,
-            self.source_list,
-            self.sound_mode,
-            self.sound_mode_list,
-            self.supported_features,
-        )
-
-    async def async_added_to_hass(self) -> None:
-        """Restore last state."""
-        if ((restored_last_extra_data := await self.async_get_last_extra_data())):
-            data = YamahaExtraStoredData.from_dict(
-                restored_last_extra_data.as_dict())
-            self._volume = data.native_volume
-            self._muted = data.native_muted
-            self._current_source = data.native_source
-            self._source_list = data.native_source_list
-            self._sound_mode = data.native_sound_mode
-            self._sound_mode_list = data.native_sound_mode_list
-            self._supported_features = data.native_supported_features
-
-        await super().async_added_to_hass()
-
 
     @property
     def state(self):
@@ -319,22 +223,6 @@ class YamahaMediaPlayer(CoordinatorEntity[YamahaCoordinator], MediaPlayerEntity,
         if media_type == "NET RADIO":
             await self.coordinator.async_play_media(media_id)
 
-    async def async_enable_output(self, port, enabled):
-        """Enable or disable an output port.."""
-        await self.coordinator.async_play_media(port, enabled)
-
-    async def async_menu_cursor(self, cursor):
-        """Press a menu cursor button."""
-        await self.coordinator.async_menu_cursor(CURSOR_TYPE_MAP[cursor])
-
-    async def async_set_scene(self, scene):
-        """Set the current scene."""
-        try:
-            await self.coordinator.async_set_scene(scene)
-        except AssertionError:
-            _LOGGER.warning("Scene '%s' does not exist!", scene)
-            raise
-
     async def async_select_sound_mode(self, sound_mode):
         """Set Sound Mode for Receiver.."""
         await self.coordinator.async_select_sound_mode(sound_mode)
@@ -344,7 +232,7 @@ class YamahaMediaPlayer(CoordinatorEntity[YamahaCoordinator], MediaPlayerEntity,
         """Artist of current playing media."""
         data = self.coordinator.data
         if data is not None and data.play_status is not None:
-            self.coordinator.data.play_status.artist
+            return self.coordinator.data.play_status.artist
         
         return None
 
