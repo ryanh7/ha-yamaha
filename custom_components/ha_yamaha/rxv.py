@@ -1,24 +1,32 @@
 from __future__ import annotations
 
 import asyncio
+from typing import NamedTuple
 import copy
-import logging
-import re
 import html
-import xml
-import aiohttp
-from collections import namedtuple
+import logging
 from math import floor
+import re
 from urllib.parse import urljoin, urlparse
+import xml
+
+import aiohttp
 from defusedxml import cElementTree
 
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
+from .exceptions import (
+    CommandUnavailable,
+    DescException,
+    MenuActionUnavailable,
+    MenuUnavailable,
+    PlaybackUnavailable,
+    ResponseException,
+    UnknownPort,
+)
 from .types import RXVDeviceInfo
 from .utils import get_id_from_udn
-from .exceptions import (CommandUnavailable, DescException, MenuUnavailable,
-                         MenuActionUnavailable, PlaybackUnavailable,
-                         ResponseException, UnknownPort)
+import contextlib
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -31,8 +39,8 @@ class PlaybackSupport:
     level.
 
     """
-    def __init__(self, play=False, stop=False, pause=False,
-                 skip_f=False, skip_r=False):
+
+    def __init__(self, play=False, stop=False, pause=False, skip_f=False, skip_r=False):
         self.play = play
         self.stop = stop
         self.pause = pause
@@ -40,44 +48,77 @@ class PlaybackSupport:
         self.skip_r = skip_r
 
 
-BasicStatus = namedtuple("BasicStatus", "on volume mute input")
-PlayStatus = namedtuple("PlayStatus", "playing artist album song station")
-MenuStatus = namedtuple("MenuStatus", "ready layer name current_line max_line current_list")
+class BasicStatus(NamedTuple):
+    on: bool
+    volume: float
+    mute: bool
+    input: str
 
-GetParam = 'GetParam'
+
+class PlayStatus(NamedTuple):
+    playing: bool
+    artist: str
+    album: str
+    song: str
+    station: str
+
+
+class MenuStatus(NamedTuple):
+    ready: bool
+    layer: str
+    name: str
+    current_line: int
+    max_line: int
+    current_list: dict[str, str]
+
+
+GetParam = "GetParam"
 YamahaCommand = '<YAMAHA_AV cmd="{command}">{payload}</YAMAHA_AV>'
-Zone = '<{zone}>{request_text}</{zone}>'
-BasicStatusGet = '<Basic_Status>GetParam</Basic_Status>'
-PartyMode = '<System><Party_Mode><Mode>{state}</Mode></Party_Mode></System>'
-PowerControl = '<Power_Control><Power>{state}</Power></Power_Control>'
-PowerControlSleep = '<Power_Control><Sleep>{sleep_value}</Sleep></Power_Control>'
-Input = '<Input><Input_Sel>{input_name}</Input_Sel></Input>'
-InputSelItem = '<Input><Input_Sel_Item>{input_name}</Input_Sel_Item></Input>'
-ConfigGet = '<{src_name}><Config>GetParam</Config></{src_name}>'
-PlayGet = '<{src_name}><Play_Info>GetParam</Play_Info></{src_name}>'
-PlayControl = '<{src_name}><Play_Control><Playback>{action}</Playback></Play_Control></{src_name}>'
-ListGet = '<{src_name}><List_Info>GetParam</List_Info></{src_name}>'
-ListControlJumpLine = '<{src_name}><List_Control><Jump_Line>{lineno}</Jump_Line>' \
-                      '</List_Control></{src_name}>'
-ListControlCursor = '<{src_name}><List_Control><Cursor>{action}</Cursor>'\
-                    '</List_Control></{src_name}>'
-CursorControlCursor = '<{src_name}><Cursor_Control><Cursor>{action}</Cursor>'\
-                      '</Cursor_Control></{src_name}>'
-VolumeLevel = '<Volume><Lvl>{value}</Lvl></Volume>'
-VolumeLevelValue = '<Val>{val}</Val><Exp>{exp}</Exp><Unit>{unit}</Unit>'
-VolumeMute = '<Volume><Mute>{state}</Mute></Volume>'
-SoundVideo = '<Sound_Video>{value}</Sound_Video>'
-SelectNetRadioLine = '<NET_RADIO><List_Control><Direct_Sel>Line_{lineno}'\
-                     '</Direct_Sel></List_Control></NET_RADIO>'
-SelectServerLine = '<SERVER><List_Control><Direct_Sel>Line_{lineno}'\
-                   '</Direct_Sel></List_Control></SERVER>'
+Zone = "<{zone}>{request_text}</{zone}>"
+BasicStatusGet = "<Basic_Status>GetParam</Basic_Status>"
+PartyMode = "<System><Party_Mode><Mode>{state}</Mode></Party_Mode></System>"
+PowerControl = "<Power_Control><Power>{state}</Power></Power_Control>"
+PowerControlSleep = "<Power_Control><Sleep>{sleep_value}</Sleep></Power_Control>"
+Input = "<Input><Input_Sel>{input_name}</Input_Sel></Input>"
+InputSelItem = "<Input><Input_Sel_Item>{input_name}</Input_Sel_Item></Input>"
+ConfigGet = "<{src_name}><Config>GetParam</Config></{src_name}>"
+PlayGet = "<{src_name}><Play_Info>GetParam</Play_Info></{src_name}>"
+PlayControl = "<{src_name}><Play_Control><Playback>{action}</Playback></Play_Control></{src_name}>"
+ListGet = "<{src_name}><List_Info>GetParam</List_Info></{src_name}>"
+ListControlJumpLine = (
+    "<{src_name}><List_Control><Jump_Line>{lineno}</Jump_Line>"
+    "</List_Control></{src_name}>"
+)
+ListControlCursor = (
+    "<{src_name}><List_Control><Cursor>{action}</Cursor></List_Control></{src_name}>"
+)
+CursorControlCursor = (
+    "<{src_name}><Cursor_Control><Cursor>{action}</Cursor>"
+    "</Cursor_Control></{src_name}>"
+)
+VolumeLevel = "<Volume><Lvl>{value}</Lvl></Volume>"
+VolumeLevelValue = "<Val>{val}</Val><Exp>{exp}</Exp><Unit>{unit}</Unit>"
+VolumeMute = "<Volume><Mute>{state}</Mute></Volume>"
+SoundVideo = "<Sound_Video>{value}</Sound_Video>"
+SelectNetRadioLine = (
+    "<NET_RADIO><List_Control><Direct_Sel>Line_{lineno}"
+    "</Direct_Sel></List_Control></NET_RADIO>"
+)
+SelectServerLine = (
+    "<SERVER><List_Control><Direct_Sel>Line_{lineno}"
+    "</Direct_Sel></List_Control></SERVER>"
+)
 
-HdmiOut = '<System><Sound_Video><HDMI><Output><OUT_{port}>{command}</OUT_{port}>'\
-          '</Output></HDMI></Sound_Video></System>'
-AvailableScenes = '<Config>GetParam</Config>'
-Scene = '<Scene><Scene_Sel>{parameter}</Scene_Sel></Scene>'
-SurroundProgram = '<Surround><Program_Sel><Current>{parameter}</Current></Program_Sel></Surround>'
-DirectMode = '<Sound_Video><Direct>{parameter}</Direct></Sound_Video>'
+HdmiOut = (
+    "<System><Sound_Video><HDMI><Output><OUT_{port}>{command}</OUT_{port}>"
+    "</Output></HDMI></Sound_Video></System>"
+)
+AvailableScenes = "<Config>GetParam</Config>"
+Scene = "<Scene><Scene_Sel>{parameter}</Scene_Sel></Scene>"
+SurroundProgram = (
+    "<Surround><Program_Sel><Current>{parameter}</Current></Program_Sel></Surround>"
+)
+DirectMode = "<Sound_Video><Direct>{parameter}</Direct></Sound_Video>"
 
 # inputs constants
 INPUT_NET_RADIO = "NET RADIO"
@@ -92,6 +133,7 @@ ARTIST_OPTIONS = ["Artist", "Program_Type"]
 ALBUM_OPTIONS = ["Album", "Radio_Text_A"]
 SONG_OPTIONS = ["Song", "Track", "Radio_Text_B"]
 STATION_OPTIONS = ["Station", "Program_Service"]
+
 
 # Cursor commands.
 class Cursor:
@@ -108,12 +150,12 @@ class Cursor:
     TOP_MENU = "Top Menu"
     UP = "Up"
 
-URL_BASE_QUERY = '*/{urn:schemas-yamaha-com:device-1-0}X_URLBase'
-CONTROL_URL_QUERY = '***/{urn:schemas-yamaha-com:device-1-0}X_controlURL'
-UNITDESC_URL_QUERY = '***/{urn:schemas-yamaha-com:device-1-0}X_unitDescURL'
+
+URL_BASE_QUERY = "*/{urn:schemas-yamaha-com:device-1-0}X_URLBase"
+CONTROL_URL_QUERY = "***/{urn:schemas-yamaha-com:device-1-0}X_controlURL"
+UNITDESC_URL_QUERY = "***/{urn:schemas-yamaha-com:device-1-0}X_unitDescURL"
 UDN_QUERY = (
-    "{urn:schemas-upnp-org:device-1-0}device"
-    "/{urn:schemas-upnp-org:device-1-0}UDN"
+    "{urn:schemas-upnp-org:device-1-0}device/{urn:schemas-upnp-org:device-1-0}UDN"
 )
 MANUFACTURER_QUERY = (
     "{urn:schemas-upnp-org:device-1-0}device"
@@ -139,20 +181,17 @@ LIST_ICON_QUERY = (
 
 
 def _build_icon_list(desc_xml):
-    icons = [icon for icon in desc_xml.findall(LIST_ICON_QUERY)]
     icon_data = []
-    for icon in icons:
-        width_elem = icon.find('.//{urn:schemas-upnp-org:device-1-0}width')
-        url_elem = icon.find('.//{urn:schemas-upnp-org:device-1-0}url')
-        
+    for icon in desc_xml.findall(LIST_ICON_QUERY):
+        width_elem = icon.find(".//{urn:schemas-upnp-org:device-1-0}width")
+        url_elem = icon.find(".//{urn:schemas-upnp-org:device-1-0}url")
+
         if url_elem is not None:
             width = 0
             if width_elem is not None:
-                try:
+                with contextlib.suppress(ValueError, AttributeError):
                     width = int(width_elem.text)
-                except (ValueError, AttributeError):
-                    pass
-            
+
             url = url_elem.text
             icon_data.append((width, url))
 
@@ -160,29 +199,34 @@ def _build_icon_list(desc_xml):
 
     return [url for _, url in icon_data]
 
+
 def _build_commands(desc_xml):
-    return [item.text.split(",") for cmd in desc_xml.findall('.//Cmd_List/Define') for item in cmd]
+    return [
+        item.text.split(",")
+        for cmd in desc_xml.findall(".//Cmd_List/Define")
+        for item in cmd
+    ]
+
 
 def _build_zones(desc_xml):
-    return [
-        e.get("YNC_Tag") for e in desc_xml.findall('.//*[@Func="Subunit"]')
-    ]
+    return [e.get("YNC_Tag") for e in desc_xml.findall('.//*[@Func="Subunit"]')]
+
 
 def _build_play_methods(desc_xml):
     source_play_methods = {}
-    
+
     # 查找所有具有YNC_Tag属性的元素
-    for source_elem in desc_xml.findall('.//*[@YNC_Tag]'):
-        source = source_elem.get('YNC_Tag')
+    for source_elem in desc_xml.findall(".//*[@YNC_Tag]"):
+        source = source_elem.get("YNC_Tag")
         if not source:
             continue
 
         play_control = source_elem.find('.//*[@Func="Play_Control"]')
         if play_control is None:
             continue
-            
+
         # 收集所有Put_1的文本内容作为支持的方法
-        methods = [s.text for s in play_control.findall('.//Put_1') if s.text]
+        methods = [s.text for s in play_control.findall(".//Put_1") if s.text]
         if len(methods) == 0:
             continue
 
@@ -190,33 +234,35 @@ def _build_play_methods(desc_xml):
 
     return source_play_methods
 
+
 def _build_supported_cursor_actions(desc_xml):
     source_cursor_actions = {}
-    
+
     # 查找所有具有YNC_Tag属性的元素
-    for source_elem in desc_xml.findall('.//*[@YNC_Tag]'):
-        source = source_elem.get('YNC_Tag')
+    for source_elem in desc_xml.findall(".//*[@YNC_Tag]"):
+        source = source_elem.get("YNC_Tag")
         if not source:
             continue
 
         cursor = source_elem.find('.//Menu[@Func="Cursor"]')
         if cursor is None:
             continue
-            
+
         # 收集所有Put_1的文本内容作为支持的方法
-        actions = [s.text for s in cursor.findall('.//Put_1') if s.text]
+        actions = [s.text for s in cursor.findall(".//Put_1") if s.text]
         if len(actions) == 0:
             continue
 
         source_cursor_actions[source] = actions
-    
+
     return source_cursor_actions
+
 
 def _build_surround_programs(desc_xml):
     zone_surround_programs = {}
 
     for source_xml in desc_xml.findall('.//*[@Func="Subunit"]'):
-        zone = source_xml.get('YNC_Tag')
+        zone = source_xml.get("YNC_Tag")
         if not zone:
             continue
 
@@ -225,26 +271,29 @@ def _build_surround_programs(desc_xml):
             continue
 
         surround_programs = []
-        
+
         direct = setup.find('.//*[@Title_1="Direct"]/Put_1')
         if direct is not None:
             surround_programs.append(DIRECT)
-        
+
         straight = setup.find('.//*[@Title_1="Straight"]/Put_1')
         if straight is not None:
             surround_programs.append(STRAIGHT)
 
         programs = setup.find('.//*[@Title_1="Program"]/Put_2/Param_1')
         if programs is not None:
-            supports = programs.findall('.//Direct')
+            supports = programs.findall(".//Direct")
             for s in supports:
                 surround_programs.append(s.text)
-        
+
         zone_surround_programs[zone] = surround_programs
-    
+
     return zone_surround_programs
 
-async def _async_request(session, control_url, command, request_text, zone="Main_Zone", zone_cmd=True):
+
+async def _async_request(
+    session, control_url, command, request_text, zone="Main_Zone", zone_cmd=True
+):
     if zone_cmd:
         payload = Zone.format(request_text=request_text, zone=zone)
     else:
@@ -256,33 +305,37 @@ async def _async_request(session, control_url, command, request_text, zone="Main
             control_url,
             data=request_text,
             headers={"Content-Type": "text/xml"},
-            timeout=aiohttp.ClientTimeout(10)
+            timeout=aiohttp.ClientTimeout(10),
         )
         # releases connection to the pool
         response = cElementTree.XML(await res.text())
         if response.get("RC") != "0":
-            _LOGGER.error("Request %s failed with %s",
-                            request_text, res.content)
+            _LOGGER.error("Request %s failed with %s", request_text, res.content)
             raise ResponseException(res.content)
         return response
     except xml.etree.ElementTree.ParseError:
-        _LOGGER.exception("Invalid XML returned for request %s: %s",
-                            request_text, res.content)
+        _LOGGER.exception(
+            "Invalid XML returned for request %s: %s", request_text, res.content
+        )
         raise
+
 
 async def _async_get_inputs(session, control_url):
     request_text = InputSelItem.format(input_name=GetParam)
-    res = await _async_request(session, control_url, 'GET', request_text)
-    inputs = dict(zip((elt.text
-                                    for elt in res.iter('Param')),
-                                    (elt.text
-                                    for elt in res.iter("Src_Name"))))
-    return inputs
+    res = await _async_request(session, control_url, "GET", request_text)
+    return dict(
+        zip(
+            (elt.text for elt in res.iter("Param")),
+            (elt.text for elt in res.iter("Src_Name")),
+            strict=False,
+        )
+    )
+
 
 async def _async_get_scenes(session, control_url):
     scenes = {}
-    res = await _async_request(session, control_url, 'GET', AvailableScenes)
-    scenes_xml = res.find('.//Scene')
+    res = await _async_request(session, control_url, "GET", AvailableScenes)
+    scenes_xml = res.find(".//Scene")
     if scenes_xml is None:
         return scenes
 
@@ -291,18 +344,17 @@ async def _async_get_scenes(session, control_url):
 
     return scenes
 
+
 async def async_discover_device_info(hass, deivce_desc_url) -> RXVDeviceInfo:
     session: aiohttp.ClientSession = async_get_clientsession(hass)
     # 获取设备xml
-    response = await session.get(
-        deivce_desc_url, timeout=aiohttp.ClientTimeout(10)
-    )
+    response = await session.get(deivce_desc_url, timeout=aiohttp.ClientTimeout(10))
     device_desc_xml = await response.text()
     if not device_desc_xml:
         return None, None
-    
+
     device_desc_xml = cElementTree.fromstring(device_desc_xml)
-    #TODO: 设备id不一致的时候发出告警
+    # TODO: 设备id不一致的时候发出告警
     udn = device_desc_xml.find(UDN_QUERY).text
     device_id = get_id_from_udn(udn)
     manufacturer = device_desc_xml.find(MANUFACTURER_QUERY).text
@@ -318,9 +370,7 @@ async def async_discover_device_info(hass, deivce_desc_url) -> RXVDeviceInfo:
 
     # 获取控制描述xml
     unit_desc_url = urljoin(base_url, unit_desc_url_path)
-    response = await session.get(
-        unit_desc_url, timeout=aiohttp.ClientTimeout(10)
-    )
+    response = await session.get(unit_desc_url, timeout=aiohttp.ClientTimeout(10))
     unit_desc_xml = await response.text()
     if not unit_desc_xml:
         raise DescException("no desc.xml")
@@ -338,28 +388,32 @@ async def async_discover_device_info(hass, deivce_desc_url) -> RXVDeviceInfo:
     inputs = await _async_get_inputs(session, control_url)
     scenes = await _async_get_scenes(session, control_url)
 
-    return RXVDeviceInfo(
-        control_url=control_url_path,
-        device_id=device_id,
-        friendly_name=friendly_name,
-        manufacturer=manufacturer,
-        model_name=model_name,
-        serial_number=serial_number,
-        icons=icons,
-        zones=zones,
-        commands=commands,
-        zone_surround_programs=zone_surround_programs,
-        source_play_methods=source_play_methods,
-        source_cursor_actions=source_cursor_actions,
-        inputs_source=inputs,
-        scenes_number=scenes
-    ), base_url
+    return (
+        RXVDeviceInfo(
+            control_url=control_url_path,
+            device_id=device_id,
+            friendly_name=friendly_name,
+            manufacturer=manufacturer,
+            model_name=model_name,
+            serial_number=serial_number,
+            icons=icons,
+            zones=zones,
+            commands=commands,
+            zone_surround_programs=zone_surround_programs,
+            source_play_methods=source_play_methods,
+            source_cursor_actions=source_cursor_actions,
+            inputs_source=inputs,
+            scenes_number=scenes,
+        ),
+        base_url,
+    )
 
-class RXV(object):
 
-    def __init__(self, hass, device: RXVDeviceInfo, base_url,
-                 zone="Main_Zone",
-                 timeout=10.0):
+class RXV:
+
+    def __init__(
+        self, hass, device: RXVDeviceInfo, base_url, zone="Main_Zone", timeout=10.0
+    ):
         self.hass = hass
         self.ctrl_url = urljoin(base_url, device.control_url)
         self._session: aiohttp.ClientSession = async_get_clientsession(hass)
@@ -369,27 +423,31 @@ class RXV(object):
 
         self._device: RXVDeviceInfo = device
 
-        self._icon = urljoin(f"http://{urlparse(base_url).hostname}:8080", self._device.icons[0]) if self._device and self._device.icons else None
-    
+        self._icon = (
+            urljoin(f"http://{urlparse(base_url).hostname}:8080", self._device.icons[0])
+            if self._device and self._device.icons
+            else None
+        )
+
     @property
     def device_id(self):
         return self._device.device_id if self._device else None
-    
+
     @property
     def friendly_name(self):
         return self._device.friendly_name if self._device else None
-    
+
     @property
     def serial_number(self):
         return self._device.serial_number if self._device else None
-    
+
     @property
     def icon(self):
         return self._icon
-    
+
     def get_inputs(self):
         return self._device.inputs_source
-    
+
     async def _async_request(self, command, request_text, zone_cmd=True):
         if zone_cmd:
             payload = Zone.format(request_text=request_text, zone=self._zone)
@@ -402,35 +460,35 @@ class RXV(object):
                 self.ctrl_url,
                 data=request_text,
                 headers={"Content-Type": "text/xml"},
-                timeout=self._http_timeout
+                timeout=self._http_timeout,
             )
             # releases connection to the pool
             response = cElementTree.XML(await res.text())
             if response.get("RC") != "0":
-                _LOGGER.error("Request %s failed with %s",
-                             request_text, res.content)
+                _LOGGER.error("Request %s failed with %s", request_text, res.content)
                 raise ResponseException(res.content)
-            return response
+
+            return response  # noqa: TRY300
         except xml.etree.ElementTree.ParseError:
-            _LOGGER.exception("Invalid XML returned for request %s: %s",
-                             request_text, res.content)
+            _LOGGER.exception(
+                "Invalid XML returned for request %s: %s", request_text, res.content
+            )
             raise
 
     async def async_get_basic_status(self):
-        response = await self._async_request('GET', BasicStatusGet)
-        on = response.find("%s/Basic_Status/Power_Control/Power" % self.zone).text == "On"
-        inp = response.find("%s/Basic_Status/Input/Input_Sel" % self.zone).text
-        mute = response.find("%s/Basic_Status/Volume/Mute" % self.zone).text == "On"
-        volume = response.find("%s/Basic_Status/Volume/Lvl/Val" % self.zone).text
-        volume = int(volume) / 10.0
+        response = await self._async_request("GET", BasicStatusGet)
+        on = response.find(f"{self.zone}/Basic_Status/Power_Control/Power").text == "On"
+        inp = response.find(f"{self.zone}/Basic_Status/Input/Input_Sel").text
+        mute = response.find(f"{self.zone}/Basic_Status/Volume/Mute").text == "On"
+        volume = response.find(f"{self.zone}/Basic_Status/Volume/Lvl/Val").text
+        volume = float(volume) / 10.0
 
-        status = BasicStatus(on, volume, mute, inp)
-        return status
+        return BasicStatus(on, volume, mute, inp)
 
     async def async_is_on(self) -> bool:
         request_text = PowerControl.format(state=GetParam)
-        response = await self._async_request('GET', request_text)
-        power = response.find("%s/Power_Control/Power" % self._zone).text
+        response = await self._async_request("GET", request_text)
+        power = response.find(f"{self.zone}/Power_Control/Power").text
         assert power in ["On", "Standby"]
         return power == "On"
 
@@ -438,12 +496,11 @@ class RXV(object):
         assert state in [True, False]
         new_state = "On" if state else "Standby"
         request_text = PowerControl.format(state=new_state)
-        response = await self._async_request('PUT', request_text)
-        return response
+        return await self._async_request("PUT", request_text)
 
     async def async_turn_on(self):
         return await self.async_turn_on_off(True)
-    
+
     async def async_turn_off(self):
         return await self.async_turn_on_off(False)
 
@@ -459,81 +516,80 @@ class RXV(object):
         src_name = await self._async_get_src_name(input_source)
 
         return PlaybackSupport(
-            play=self.supports_play_method(src_name, 'Play'),
-            pause=self.supports_play_method(src_name, 'Pause'),
-            stop=self.supports_play_method(src_name, 'Stop'),
-            skip_f=self.supports_play_method(src_name, 'Skip Fwd'),
-            skip_r=self.supports_play_method(src_name, 'Skip Rev'))
+            play=self.supports_play_method(src_name, "Play"),
+            pause=self.supports_play_method(src_name, "Pause"),
+            stop=self.supports_play_method(src_name, "Stop"),
+            skip_f=self.supports_play_method(src_name, "Skip Fwd"),
+            skip_r=self.supports_play_method(src_name, "Skip Rev"),
+        )
 
     async def async_is_playback_supported(self, input_source=None):
         support = await self.async_get_playback_support(input_source)
         return support.play
 
     async def async_play(self):
-        await self._async_playback_control('Play')
+        await self._async_playback_control("Play")
 
     async def async_pause(self):
-        await self._async_playback_control('Pause')
+        await self._async_playback_control("Pause")
 
     async def async_stop(self):
-        await self._async_playback_control('Stop')
+        await self._async_playback_control("Stop")
 
     async def async_next(self):
-        await self._async_playback_control('Skip Fwd')
+        await self._async_playback_control("Skip Fwd")
 
     async def async_previous(self):
-        await self._async_playback_control('Skip Rev')
+        await self._async_playback_control("Skip Rev")
 
     async def _async_playback_control(self, action):
         src_name, input_source = await self._async_get_src_name()
         if not src_name:
             return None
-        
+
         if not await self.async_is_playback_supported(input_source):
             raise PlaybackUnavailable(input_source, action)
 
         request_text = PlayControl.format(src_name=src_name, action=action)
-        response = await self._async_request('PUT', request_text, zone_cmd=False)
-        return response
+        return await self._async_request("PUT", request_text, zone_cmd=False)
 
     async def async_get_input(self):
         request_text = Input.format(input_name=GetParam)
-        response = await self._async_request('GET', request_text)
-        return response.find("%s/Input/Input_Sel" % self.zone).text
+        response = await self._async_request("GET", request_text)
+        return response.find(f"{self.zone}/Input/Input_Sel").text
 
     async def async_set_input(self, input_name):
         assert input_name in self._device.inputs_source
         request_text = Input.format(input_name=input_name)
-        await self._async_request('PUT', request_text)
+        await self._async_request("PUT", request_text)
 
     async def async_get_outputs(self):
         outputs = {}
 
-        for cmd in self._find_commands('System,Sound_Video,HDMI,Output'):
+        for cmd in self._find_commands("System,Sound_Video,HDMI,Output"):
             # An output typically looks like this:
             #   System,Sound_Video,HDMI,Output,OUT_1
             # Extract the index number at the end as it is needed when
             # requesting its current state.
-            m = re.match(r'.*_(\d+)$', cmd)
+            m = re.match(r".*_(\d+)$", cmd)
             if m is None:
                 continue
 
             port_number = m.group(1)
-            request = HdmiOut.format(port=port_number, command='GetParam')
-            response = await self._async_request('GET', request, zone_cmd=False)
-            port_state = response.find(cmd.replace(',', '/')).text.lower()
-            outputs['hdmi' + str(port_number)] = port_state
+            request = HdmiOut.format(port=port_number, command="GetParam")
+            response = await self._async_request("GET", request, zone_cmd=False)
+            port_state = response.find(cmd.replace(",", "/")).text.lower()
+            outputs["hdmi" + str(port_number)] = port_state
 
         return outputs
 
     async def async_enable_output(self, port, enabled):
-        m = re.match(r'hdmi(\d+)', port.lower())
+        m = re.match(r"hdmi(\d+)", port.lower())
         if m is None:
             raise UnknownPort(port)
 
-        request = HdmiOut.format(port=m.group(1),
-                                 command='On' if enabled else 'Off')
-        await self._async_request('PUT', request, zone_cmd=False)
+        request = HdmiOut.format(port=m.group(1), command="On" if enabled else "Off")
+        await self._async_request("PUT", request, zone_cmd=False)
 
     def _find_commands(self, cmd_name):
         for cmd in self._device.commands:
@@ -541,60 +597,41 @@ class RXV(object):
                 yield cmd
 
     async def async_get_direct_mode(self):
-        """
-        Current state of direct mode.
-        """
         if DIRECT not in self._device.zone_surround_programs.get(self.zone, []):
             return False
 
         request_text = DirectMode.format(parameter="<Mode>GetParam</Mode>")
-        response = await self._async_request('GET', request_text)
-        direct = response.find(
-            "%s/Sound_Video/Direct/Mode" % self.zone
-        ).text == "On"
-
-        return direct
+        response = await self._async_request("GET", request_text)
+        return response.find(f"{self.zone}/Sound_Video/Direct/Mode").text == "On"
 
     async def async_set_direct_mode(self, on):
-        """
-        Enable/Disable direct mode.
-
-        Precondition: DIRECT mode is supported, raises AssertionError otherwise.
-        """
         assert DIRECT in self._device.zone_surround_programs.get(self.zone, [])
         if on:
             request_text = DirectMode.format(parameter="<Mode>On</Mode>")
         else:
             request_text = DirectMode.format(parameter="<Mode>Off</Mode>")
-        await self._async_request('PUT', request_text)
+        await self._async_request("PUT", request_text)
 
     def get_surround_programs(self):
         return self._device.zone_surround_programs.get(self.zone)
 
     async def async_get_surround_program(self):
-        """
-        Get current selected surround program.
-
-        If a STRAIGHT or DIRECT mode is supported and active, returns that mode.
-        Otherwise returns the currently active surround program.
-        """
         if await self.async_get_direct_mode():
             return DIRECT
 
         request_text = SurroundProgram.format(parameter=GetParam)
-        response = await self._async_request('GET', request_text)
-        straight = response.find(
-            "%s/Surround/Program_Sel/Current/Straight" % self.zone
-        ).text == "On"
+        response = await self._async_request("GET", request_text)
+        straight = (
+            response.find(f"{self.zone}/Surround/Program_Sel/Current/Straight").text
+            == "On"
+        )
 
         if straight:
             return STRAIGHT
 
-        program = response.find(
-            "%s/Surround/Program_Sel/Current/Sound_Program" % self.zone
+        return response.find(
+            f"{self.zone}/Surround/Program_Sel/Current/Sound_Program"
         ).text
-
-        return program
 
     async def async_set_surround_program(self, surround_name):
         assert surround_name in self._device.zone_surround_programs.get(self.zone, [])
@@ -612,22 +649,20 @@ class RXV(object):
         if surround_name == STRAIGHT:
             parameter = "<Straight>On</Straight>"
         else:
-            parameter = "<Sound_Program>{parameter}</Sound_Program>".format(
-                parameter=surround_name
-            )
+            parameter = f"<Sound_Program>{surround_name}</Sound_Program>"
         request_text = SurroundProgram.format(parameter=parameter)
-        await self._async_request('PUT', request_text)
+        await self._async_request("PUT", request_text)
 
     async def async_get_scene(self):
         request_text = Scene.format(parameter=GetParam)
-        response = await self._async_request('GET', request_text)
-        return response.find("%s/Scene/Scene_Sel" % self.zone).text
+        response = await self._async_request("GET", request_text)
+        return response.find(f"{self.zone}/Scene/Scene_Sel").text
 
     async def async_set_scene(self, scene_name):
         assert scene_name in self._device.scenes_number
         scene_number = self._device.scenes_number.get(scene_name)
         request_text = Scene.format(parameter=scene_number)
-        await self._async_request('PUT', request_text)
+        await self._async_request("PUT", request_text)
 
     @property
     def zone(self):
@@ -665,15 +700,15 @@ class RXV(object):
             return True  # input is instantly ready
 
         request_text = ConfigGet.format(src_name=src_name)
-        config = await self._async_request('GET', request_text, zone_cmd=False)
+        config = await self._async_request("GET", request_text, zone_cmd=False)
 
-        avail = next(config.iter('Feature_Availability'))
-        return avail.text == 'Ready'
+        avail = next(config.iter("Feature_Availability"))
+        return avail.text == "Ready"
 
     @staticmethod
     def safe_get(doc, names):
         for name in names:
-            tag = doc.find(".//%s" % name)
+            tag = doc.find(f".//{name}")
             if tag is not None and tag.text is not None:
                 # Tuner and Net Radio sometimes respond
                 # with escaped entities
@@ -685,7 +720,7 @@ class RXV(object):
             cur_input = await self.async_get_input()
         if cur_input not in self._device.inputs_source:
             return None, None
-        if cur_input.upper().startswith('HDMI'):
+        if cur_input.upper().startswith("HDMI"):
             # CEC commands can be sent over the HDMI inputs to control devices
             # connected to the receiver. These can support play methods as well
             # as menu cursor commands. Return the zone so these features
@@ -700,23 +735,21 @@ class RXV(object):
         if not src_name:
             return None
 
-        if not self.supports_method(src_name, 'Play_Info'):
+        if not self.supports_method(src_name, "Play_Info"):
             return None
 
         request_text = PlayGet.format(src_name=src_name)
-        res = await self._async_request('GET', request_text, zone_cmd=False)
+        res = await self._async_request("GET", request_text, zone_cmd=False)
 
-        playing = RXV.safe_get(res, ["Playback_Info"]) == "Play" \
-            or src_name == "Tuner"
+        playing = RXV.safe_get(res, ["Playback_Info"]) == "Play" or src_name == "Tuner"
 
-        status = PlayStatus(
+        return PlayStatus(
             playing,
             artist=RXV.safe_get(res, ARTIST_OPTIONS),
             album=RXV.safe_get(res, ALBUM_OPTIONS),
             song=RXV.safe_get(res, SONG_OPTIONS),
-            station=RXV.safe_get(res, STATION_OPTIONS)
+            station=RXV.safe_get(res, STATION_OPTIONS),
         )
-        return status
 
     async def async_get_menu_status(self):
         src_name, cur_input = await self._async_get_src_name()
@@ -724,34 +757,30 @@ class RXV(object):
             raise MenuUnavailable(cur_input)
 
         request_text = ListGet.format(src_name=src_name)
-        res = await self._async_request('GET', request_text, zone_cmd=False)
+        res = await self._async_request("GET", request_text, zone_cmd=False)
 
-        ready = (next(res.iter("Menu_Status")).text == "Ready")
+        ready = next(res.iter("Menu_Status")).text == "Ready"
         layer = int(next(res.iter("Menu_Layer")).text)
         name = next(res.iter("Menu_Name")).text
         current_line = int(next(res.iter("Current_Line")).text)
         max_line = int(next(res.iter("Max_Line")).text)
-        current_list = next(res.iter('Current_List'))
+        current_list = next(res.iter("Current_List"))
 
         cl = {
-            elt.tag: elt.find('Txt').text
+            elt.tag: elt.find("Txt").text
             for elt in list(current_list)
-            if elt.find('Attribute').text != 'Unselectable'
+            if elt.find("Attribute").text != "Unselectable"
         }
 
-        status = MenuStatus(ready, layer, name, current_line, max_line, cl)
-        return status
+        return MenuStatus(ready, layer, name, current_line, max_line, cl)
 
     async def async_set_menu_jump_line(self, lineno):
         src_name, cur_input = await self._async_get_src_name()
         if not src_name:
             raise MenuUnavailable(cur_input)
 
-        request_text = ListControlJumpLine.format(
-            src_name=src_name,
-            lineno=lineno
-        )
-        return await self._async_request('PUT', request_text, zone_cmd=False)
+        request_text = ListControlJumpLine.format(src_name=src_name, lineno=lineno)
+        return await self._async_request("PUT", request_text, zone_cmd=False)
 
     async def async_get_supported_cursor_actions(self, src_name=None):
         if src_name is None:
@@ -768,9 +797,9 @@ class RXV(object):
         if not src_name:
             raise MenuUnavailable(cur_input)
 
-        if self.supports_method(src_name, 'List_Control', 'Cursor'):
+        if self.supports_method(src_name, "List_Control", "Cursor"):
             template = ListControlCursor
-        elif self.supports_method(src_name, 'Cursor_Control', 'Cursor'):
+        elif self.supports_method(src_name, "Cursor_Control", "Cursor"):
             template = CursorControlCursor
         else:
             raise MenuUnavailable(cur_input)
@@ -779,11 +808,8 @@ class RXV(object):
         if action not in await self.async_get_supported_cursor_actions(src_name):
             raise MenuActionUnavailable(cur_input, action)
 
-        request_text = template.format(
-            src_name=src_name,
-            action=action
-        )
-        return await self._async_request('PUT', request_text, zone_cmd=False)
+        request_text = template.format(src_name=src_name, action=action)
+        return await self._async_request("PUT", request_text, zone_cmd=False)
 
     async def async_menu_up(self):
         return await self.async_set_menu_cursor(Cursor.UP)
@@ -827,8 +853,8 @@ class RXV(object):
 
     async def async_get_volume(self):
         request_text = VolumeLevel.format(value=GetParam)
-        response = await self._async_request('GET', request_text)
-        vol = response.find('%s/Volume/Lvl/Val' % self.zone).text
+        response = await self._async_request("GET", request_text)
+        vol = response.find(f"{self.zone}/Volume/Lvl/Val").text
         return float(vol) / 10.0
 
     async def async_set_volume(self, value):
@@ -844,11 +870,11 @@ class RXV(object):
         """
         value = str(int(value * 2) * 5)
         exp = 1
-        unit = 'dB'
+        unit = "dB"
 
         volume_val = VolumeLevelValue.format(val=value, exp=exp, unit=unit)
         request_text = VolumeLevel.format(value=volume_val)
-        await self._async_request('PUT', request_text)
+        await self._async_request("PUT", request_text)
 
     async def async_volume_fade(self, final_vol, sleep=0.5):
         start_vol = int(floor(await self.async_get_volume()))
@@ -861,8 +887,8 @@ class RXV(object):
 
     async def async_is_partymode(self):
         request_text = PartyMode.format(state=GetParam)
-        response = await self._async_request('GET', request_text, False)
-        pmode = response.find('System/Party_Mode/Mode').text
+        response = await self._async_request("GET", request_text, False)
+        pmode = response.find("System/Party_Mode/Mode").text
         assert pmode in ["On", "Off"]
         return pmode == "On"
 
@@ -870,13 +896,12 @@ class RXV(object):
         assert on in [True, False]
         new_state = "On" if on else "Off"
         request_text = PartyMode.format(state=new_state)
-        response = await self._async_request('PUT', request_text, False)
-        return response
+        return await self._async_request("PUT", request_text, False)
 
     async def async_is_mute(self):
         request_text = VolumeMute.format(state=GetParam)
-        response = await self._async_request('GET', request_text)
-        mute = response.find('%s/Volume/Mute' % self.zone).text
+        response = await self._async_request("GET", request_text)
+        mute = response.find(f"{self.zone}/Volume/Mute").text
         assert mute in ["On", "Off"]
         return mute == "On"
 
@@ -884,72 +909,80 @@ class RXV(object):
         assert mute in [True, False]
         new_state = "On" if mute else "Off"
         request_text = VolumeMute.format(state=new_state)
-        response = await self._async_request('PUT', request_text)
-        return response
+        return await self._async_request("PUT", request_text)
 
     async def async_is_adaptive_drc(self):
-        """
-        View the current Adaptive Dynamic Range Compression setting, a means
-        of equalizing various input levels at low volume. This feature is ideal
-        for watching late at night (to avoid extremes of volume between
+        """View the current Adaptive Dynamic Range Compression setting, a means
+        of equalizing various input levels at low volume.
+
+        This feature is ideal for watching late at night (to avoid extremes of volume between
         dialogue scenes and explosions etc.) or in noisy environments. It is
         best disabled for the full dynamic range audio experience.
 
-        :return: True if Dynamic Range Compression is enabled.
-        """
-        get_tag = '<Adaptive_DRC>GetParam</Adaptive_DRC>'
+        return True if Dynamic Range Compression is enabled.
+        """  # noqa: D205
+        get_tag = "<Adaptive_DRC>GetParam</Adaptive_DRC>"
         request_text = SoundVideo.format(value=get_tag)
-        response = await self._async_request('GET', request_text)
-        drc = response.find('%s/Sound_Video/Adaptive_DRC' % self.zone).text
-        return False if drc == 'Off' else True
+        response = await self._async_request("GET", request_text)
+        drc = response.find(f"{self.zone}/Sound_Video/Adaptive_DRC").text
+        return drc != "Off"
 
     async def async_set_adaptive_drc(self, auto=False):
-        """
-        :param value: True to enable dynamic range compression. Default False.
-        """
-        set_value = 'Auto' if auto else 'Off'
-        set_tag = '<Adaptive_DRC>{}</Adaptive_DRC>'.format(set_value)
+        """:param value: True to enable dynamic range compression. Default False."""
+        set_value = "Auto" if auto else "Off"
+        set_tag = f"<Adaptive_DRC>{set_value}</Adaptive_DRC>"
         request_text = SoundVideo.format(value=set_tag)
-        await self._async_request('PUT', request_text)
+        await self._async_request("PUT", request_text)
 
     async def async_get_dialogue_level(self):
-        """
-        An adjustment to elevate the volume of dialogue sounds; useful if the
-        volume of dialogue is difficult to make out against background sounds
-        or music.
+        """Return an adjustment value to elevate dialogue volume.
 
-        :return: An integer between 0 (no adjustment) to 3 (most increased).
+        Useful when dialogue is difficult to hear against background sounds or music.
+
+        Returns:
+            int: An integer between 0 (no adjustment) to 3 (maximum increase).
+
         """
-        if self.supports_method(self.zone, "Sound_Video", "Dialogue_Adjust", "Dialogue_Lvl"):
+        if self.supports_method(
+            self.zone, "Sound_Video", "Dialogue_Adjust", "Dialogue_Lvl"
+        ):
             raise CommandUnavailable(self.zone, "Dialogue_Lvl")
 
-        get_tag = '<Dialogue_Adjust><Dialogue_Lvl>GetParam' \
-                  '</Dialogue_Lvl></Dialogue_Adjust>'
+        get_tag = (
+            "<Dialogue_Adjust><Dialogue_Lvl>GetParam"
+            "</Dialogue_Lvl></Dialogue_Adjust>"
+        )
         request_text = SoundVideo.format(value=get_tag)
-        response = await self._async_request('GET', request_text)
-        level = response.find('%s/Sound_Video/Dialogue_Adjust/Dialogue_Lvl'
-                              % self.zone).text
+        response = await self._async_request("GET", request_text)
+        level = response.find(
+            f"{self.zone}/Sound_Video/Dialogue_Adjust/Dialogue_Lvl"
+        ).text
         return int(level)
 
     async def async_set_dialogue_level(self, value=0):
-        """
+        """Set the dialogue enhancement level.
+
         :param value: An integer between 0 and 3 to determine how much to
-            increase dialogue sounds over other sounds. A value of zero
+        increase dialogue sounds over other sounds. A value of zero
             disables this feature.
         """
-        if self.supports_method(self.zone, "Sound_Video", "Dialogue_Adjust", "Dialogue_Lvl"):
+        if self.supports_method(
+            self.zone, "Sound_Video", "Dialogue_Adjust", "Dialogue_Lvl"
+        ):
             raise CommandUnavailable(self.zone, "Dialogue_Lvl")
 
         if int(value) not in [0, 1, 2, 3]:
             raise ValueError("Value must be 0, 1, 2, or 3")
-        set_tag = '<Dialogue_Adjust><Dialogue_Lvl>{}' \
-                  '</Dialogue_Lvl></Dialogue_Adjust>'.format(int(value))
+        set_tag = (
+            f"<Dialogue_Adjust><Dialogue_Lvl>{int(value)}"
+            "</Dialogue_Lvl></Dialogue_Adjust>"
+        )
         request_text = SoundVideo.format(value=set_tag)
-        await self._async_request('PUT', request_text)
+        await self._async_request("PUT", request_text)
 
     async def _async_set_direct_sel(self, lineno):
         request_text = SelectNetRadioLine.format(lineno=lineno)
-        return await self._async_request('PUT', request_text, zone_cmd=False)
+        return await self._async_request("PUT", request_text, zone_cmd=False)
 
     async def async_set_net_radio(self, path):
         """Play net radio at the specified path.
@@ -971,7 +1004,7 @@ class RXV(object):
         await self.async_set_input(INPUT_NET_RADIO)
         await self.async_menu_reset()
 
-        for attempt in range(20):
+        for _ in range(20):
             menu = await self.async_get_menu_status()
             if menu.ready:
                 for line, value in menu.current_list.items():
@@ -987,10 +1020,10 @@ class RXV(object):
 
     async def _async_set_direct_sel_server(self, lineno):
         request_text = SelectServerLine.format(lineno=lineno)
-        return await self._async_request('PUT', request_text, zone_cmd=False)
+        return await self._async_request("PUT", request_text, zone_cmd=False)
 
     async def async_set_server(self, path):
-        """Play from specified server
+        """Play from specified server.
 
         This lets you play a SERVER address in a single command
         with by encoding it with > as separators. For instance:
@@ -1004,7 +1037,7 @@ class RXV(object):
         layers = path.split(">")
         await self.async_set_input(INPUT_SERVER)
 
-        for attempt in range(20):
+        for _ in range(20):
             menu = await self.async_get_menu_status()
             if menu.ready:
                 for line, value in menu.current_list.items():
@@ -1020,18 +1053,9 @@ class RXV(object):
 
     async def async_get_sleep(self):
         request_text = PowerControlSleep.format(sleep_value=GetParam)
-        response = await self._async_request('GET', request_text)
-        sleep = response.find("%s/Power_Control/Sleep" % self._zone).text
-        return sleep
+        response = await self._async_request("GET", request_text)
+        return response.find(f"{self._zone}/Power_Control/Sleep").text
 
     async def async_set_sleep(self, value):
         request_text = PowerControlSleep.format(sleep_value=value)
-        await self._async_request('PUT', request_text)
-
-    @property
-    def small_image_url(self):
-        return f"http://{self.host}:8080/BCO_device_sm_icon.png"
-
-    @property
-    def large_image_url(self):
-        return f"http://{self.host}:8080/BCO_device_lrg_icon.png"
+        await self._async_request("PUT", request_text)

@@ -4,7 +4,9 @@
   "config_flow": true,
   "documentation": "https://github.com/ryanh7/ha-yamaha",
   "requirements": [],
-  "codeowners": ["ryanh7"],
+  "codeowners": [
+    "ryanh7"
+  ],
   "iot_class": "local_polling",
   "version": "1.0.0",
   "ssdp": [

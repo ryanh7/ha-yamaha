@@ -1,16 +1,17 @@
 """Support for Yamaha Receivers."""
+
 from __future__ import annotations
 
 import logging
 
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.components.media_player import (
+    MediaPlayerDeviceClass,
     MediaPlayerEntity,
-    MediaType,
-    MediaPlayerEntityFeature,
     MediaPlayerEntityDescription,
-    MediaPlayerDeviceClass
+    MediaPlayerEntityFeature,
+    MediaType,
 )
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     STATE_IDLE,
     STATE_OFF,
@@ -21,9 +22,9 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
-from homeassistant.config_entries import ConfigEntry
-from .coordinator import YamahaCoordinator, YamahaData
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from .coordinator import YamahaCoordinator, YamahaData
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -44,12 +45,12 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator = entry.runtime_data
-    async_add_entities([YamahaMediaPlayer(
-        hass, coordinator
-    )])
+    async_add_entities([YamahaMediaPlayer(hass, coordinator)])
 
 
-class YamahaMediaPlayer(CoordinatorEntity[YamahaCoordinator], MediaPlayerEntity, RestoreEntity):
+class YamahaMediaPlayer(
+    CoordinatorEntity[YamahaCoordinator], MediaPlayerEntity, RestoreEntity
+):
     """Representation of a Yamaha device."""
 
     _attr_has_entity_name = True
@@ -64,9 +65,7 @@ class YamahaMediaPlayer(CoordinatorEntity[YamahaCoordinator], MediaPlayerEntity,
         """Initialize the Yamaha Receiver."""
         super().__init__(coordinator)
         self.hass = hass
-        self._attr_unique_id = (
-            f"{coordinator.config_entry.entry_id}_media_player"
-        )
+        self._attr_unique_id = f"{coordinator.config_entry.entry_id}_media_player"
 
     @property
     def device_info(self):
@@ -81,53 +80,53 @@ class YamahaMediaPlayer(CoordinatorEntity[YamahaCoordinator], MediaPlayerEntity,
         if data.is_on:
             if data.play_status is None:
                 return STATE_ON
-            
+
             if data.play_status.playing:
                 return STATE_PLAYING
-            
+
             return STATE_IDLE
-        
+
         return STATE_OFF
 
     @property
     def volume_level(self):
         """Volume level of the media player (0..1)."""
-        if (data:=self.coordinator.data) is None:
+        if (data := self.coordinator.data) is None:
             return None
         return data.volume
 
     @property
     def is_volume_muted(self):
         """Boolean if volume is currently muted."""
-        if (data:=self.coordinator.data) is None:
+        if (data := self.coordinator.data) is None:
             return None
         return data.muted
 
     @property
     def source(self):
         """Return the current input source."""
-        if (data:=self.coordinator.data) is None:
+        if (data := self.coordinator.data) is None:
             return None
         return data.current_source
 
     @property
     def source_list(self):
         """List of available input sources."""
-        if (data:=self.coordinator.data) is None:
+        if (data := self.coordinator.data) is None:
             return None
         return data.source_list
 
     @property
     def sound_mode(self):
         """Return the current sound mode."""
-        if (data:=self.coordinator.data) is None:
+        if (data := self.coordinator.data) is None:
             return None
         return data.sound_mode
 
     @property
     def sound_mode_list(self):
         """Return the current sound mode."""
-        if (data:=self.coordinator.data) is None:
+        if (data := self.coordinator.data) is None:
             return None
         return data.sound_mode_list
 
@@ -139,14 +138,16 @@ class YamahaMediaPlayer(CoordinatorEntity[YamahaCoordinator], MediaPlayerEntity,
         data: YamahaData = self.coordinator.data
         if data is None:
             return supported_features
-        
+
         if data.sound_mode_list:
             supported_features |= MediaPlayerEntityFeature.SELECT_SOUND_MODE
 
         if data.playback_support is None:
             supports = data.playback_support
             mapping = {
-                "play": (MediaPlayerEntityFeature.PLAY | MediaPlayerEntityFeature.PLAY_MEDIA),
+                "play": (
+                    MediaPlayerEntityFeature.PLAY | MediaPlayerEntityFeature.PLAY_MEDIA
+                ),
                 "pause": MediaPlayerEntityFeature.PAUSE,
                 "stop": MediaPlayerEntityFeature.STOP,
                 "skip_f": MediaPlayerEntityFeature.NEXT_TRACK,
@@ -161,7 +162,7 @@ class YamahaMediaPlayer(CoordinatorEntity[YamahaCoordinator], MediaPlayerEntity,
     async def async_turn_on(self):
         """Turn the media player on."""
         await self.coordinator.async_turn_on()
-        #TODO: 设置音量
+        # TODO: 设置音量
         await self.coordinator.async_refresh()
 
     async def async_turn_off(self):
@@ -233,7 +234,7 @@ class YamahaMediaPlayer(CoordinatorEntity[YamahaCoordinator], MediaPlayerEntity,
         data = self.coordinator.data
         if data is not None and data.play_status is not None:
             return self.coordinator.data.play_status.artist
-        
+
         return None
 
     @property
@@ -242,7 +243,7 @@ class YamahaMediaPlayer(CoordinatorEntity[YamahaCoordinator], MediaPlayerEntity,
         data = self.coordinator.data
         if data is not None and data.play_status is not None:
             return self.coordinator.data.play_status.album
-        
+
         return None
 
     @property
@@ -251,7 +252,7 @@ class YamahaMediaPlayer(CoordinatorEntity[YamahaCoordinator], MediaPlayerEntity,
         # Loose assumption that if playback is supported, we are playing music
         data = self.coordinator.data
         if data is not None and data.playback_support.play:
-            return  MediaType.MUSIC
+            return MediaType.MUSIC
         return None
 
     @property
@@ -268,15 +269,16 @@ class YamahaMediaPlayer(CoordinatorEntity[YamahaCoordinator], MediaPlayerEntity,
                 return f"{station}: {song}"
 
             return song or station
-    
+        return None
+
     @property
     def media_image_url(self) -> str | None:
         """Image url of current playing media."""
         data = self.coordinator.data
         if data is None:
             return None
-            
-        album = None 
+
+        album = None
         if data.play_status is not None:
             album = self.coordinator.data.play_status.album
 

@@ -1,4 +1,5 @@
 """Constants for the Yamaha component."""
+
 DOMAIN = "ha_yamaha"
 DEFAULT_NAME = "Yamaha Media Render"
 
