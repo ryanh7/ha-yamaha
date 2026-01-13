@@ -2,22 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import copy
-from dataclasses import dataclass
 import logging
 import re
 import html
 import xml
+import aiohttp
 from collections import namedtuple
 from math import floor
 from urllib.parse import urljoin, urlparse
-
-import aiohttp
 from defusedxml import cElementTree
 
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
+from .types import RXVDeviceInfo
 from .utils import get_id_from_udn
-
 from .exceptions import (CommandUnavailable, DescException, MenuUnavailable,
                          MenuActionUnavailable, PlaybackUnavailable,
                          ResponseException, UnknownPort)
@@ -139,23 +137,6 @@ LIST_ICON_QUERY = (
     "/{urn:schemas-upnp-org:device-1-0}icon"
 )
 
-@dataclass
-class RXVDeviceinfo:
-    control_url: str
-    device_id: str
-    friendly_name: str
-    manufacturer: str
-    model_name: str
-    serial_number: str
-    icons: list[str]
-    zones: list[str]
-    commands: list[str]
-    zone_surround_programs: dict[str, list[str]]
-    source_play_methods: dict[str, list[str]]
-    source_cursor_actions: dict[str, list[str]]
-    inputs_source: dict[str, str]
-    scenes_number: dict[str, str]
-
 
 def _build_icon_list(desc_xml):
     icons = [icon for icon in desc_xml.findall(LIST_ICON_QUERY)]
@@ -245,13 +226,13 @@ def _build_surround_programs(desc_xml):
 
         surround_programs = []
         
-        straight = setup.find('.//*[@Title_1="Straight"]/Put_1')
-        if straight is not None:
-            surround_programs.append(STRAIGHT)
-
         direct = setup.find('.//*[@Title_1="Direct"]/Put_1')
         if direct is not None:
             surround_programs.append(DIRECT)
+        
+        straight = setup.find('.//*[@Title_1="Straight"]/Put_1')
+        if straight is not None:
+            surround_programs.append(STRAIGHT)
 
         programs = setup.find('.//*[@Title_1="Program"]/Put_2/Param_1')
         if programs is not None:
@@ -310,7 +291,7 @@ async def _async_get_scenes(session, control_url):
 
     return scenes
 
-async def async_discover_device_info(hass, deivce_desc_url) -> RXVDeviceinfo:
+async def async_discover_device_info(hass, deivce_desc_url) -> RXVDeviceInfo:
     session: aiohttp.ClientSession = async_get_clientsession(hass)
     # 获取设备xml
     response = await session.get(
@@ -357,7 +338,7 @@ async def async_discover_device_info(hass, deivce_desc_url) -> RXVDeviceinfo:
     inputs = await _async_get_inputs(session, control_url)
     scenes = await _async_get_scenes(session, control_url)
 
-    return RXVDeviceinfo(
+    return RXVDeviceInfo(
         control_url=control_url_path,
         device_id=device_id,
         friendly_name=friendly_name,
@@ -376,7 +357,7 @@ async def async_discover_device_info(hass, deivce_desc_url) -> RXVDeviceinfo:
 
 class RXV(object):
 
-    def __init__(self, hass, device: RXVDeviceinfo, base_url,
+    def __init__(self, hass, device: RXVDeviceInfo, base_url,
                  zone="Main_Zone",
                  timeout=10.0):
         self.hass = hass
@@ -386,7 +367,7 @@ class RXV(object):
 
         self._zone = zone
 
-        self._device: RXVDeviceinfo = device
+        self._device: RXVDeviceInfo = device
 
         self._icon = urljoin(f"http://{urlparse(base_url).hostname}:8080", self._device.icons[0]) if self._device and self._device.icons else None
     

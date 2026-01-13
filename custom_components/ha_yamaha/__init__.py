@@ -4,7 +4,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.start import async_at_started
 from .coordinator import YamahaCoordinator
 from .const import CONF_INFO_ID
-from .utils import get_store
+from .utils import async_remove_store
 
 PLATFORMS = [Platform.MEDIA_PLAYER]
 
@@ -35,5 +35,4 @@ async def async_remove_entry(
     hass: HomeAssistant, config_entry: ConfigEntry
 ) -> None:
     """Handle removal of an entry."""
-    store = get_store(hass, config_entry.data.get(CONF_INFO_ID))
-    await store.async_remove()
+    await async_remove_store(hass, config_entry.data.get(CONF_INFO_ID))

@@ -1,7 +1,10 @@
+from dataclasses import asdict
 import re
+from uuid import uuid4
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.json import JSONEncoder
 
+from .types import RXVDeviceInfo
 from .const import DOMAIN
 
 
@@ -9,10 +12,19 @@ STORAGE_VERSION = 3
 
 
 def get_store(hass, info_id: str) -> Store[str]:
-    """Return the reolink store."""
     return Store(
         hass, STORAGE_VERSION, f"{DOMAIN}.{info_id}", encoder=JSONEncoder
     )
+
+async def async_save_store(hass, device_info: RXVDeviceInfo, info_id=None) -> str:
+    if not info_id:
+        info_id = str(uuid4())
+
+    await get_store(hass, info_id).async_save(asdict(device_info))
+    return info_id
+
+async def async_remove_store(hass, info_id):
+    await get_store(hass, info_id).async_remove()
 
 def get_id_from_udn(udn):
     if udn is None:

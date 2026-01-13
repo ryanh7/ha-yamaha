@@ -6,7 +6,8 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.entity import DeviceInfo
 
-from .rxv import RXVDeviceinfo, RXV, PlayStatus, PlaybackSupport
+from .types import RXVDeviceInfo
+from .rxv import RXV, PlayStatus, PlaybackSupport
 from .utils import get_store
 from .const import (
     CONF_BASE_URL,
@@ -56,7 +57,7 @@ class YamahaCoordinator(DataUpdateCoordinator[YamahaData]):
     async def async_setup(self):
         store = get_store(self.hass, self._info_id)
         restored = await store.async_load()
-        device = RXVDeviceinfo(**restored)
+        device = RXVDeviceInfo(**restored)
         self._rxv = RXV(self.hass, device, self._base_url)
 
         self.device_info = DeviceInfo(
