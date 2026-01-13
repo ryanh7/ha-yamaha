@@ -1,6 +1,11 @@
 """Constants for the Yamaha component."""
 DOMAIN = "ha_yamaha"
 DEFAULT_NAME = "Yamaha Media Render"
+
+CONF_INFO_ID = "info_id"
+CONF_SSDP_LOCATION = "ssdp_location"
+CONF_BASE_URL = "base_url"
+
 CURSOR_TYPE_DOWN = "down"
 CURSOR_TYPE_LEFT = "left"
 CURSOR_TYPE_RETURN = "return"

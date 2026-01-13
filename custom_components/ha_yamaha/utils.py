@@ -1,16 +1,17 @@
+import re
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.json import JSONEncoder
-import re
+
 from .const import DOMAIN
 
 
 STORAGE_VERSION = 3
 
 
-def get_store(hass, config_entry_id: str) -> Store[str]:
+def get_store(hass, info_id: str) -> Store[str]:
     """Return the reolink store."""
     return Store(
-        hass, STORAGE_VERSION, f"{DOMAIN}.{config_entry_id}", encoder=JSONEncoder
+        hass, STORAGE_VERSION, f"{DOMAIN}.{info_id}", encoder=JSONEncoder
     )
 
 def get_id_from_udn(udn):

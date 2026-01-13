@@ -3,12 +3,14 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.start import async_at_started
 from .coordinator import YamahaCoordinator
+from .const import CONF_INFO_ID
 from .utils import get_store
 
 PLATFORMS = [Platform.MEDIA_PLAYER]
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     rxv = YamahaCoordinator(hass, config_entry=entry)
+    await rxv.async_setup()
     entry.runtime_data = rxv
     
     async def _async_finish_startup(hass: HomeAssistant) -> None:
@@ -33,5 +35,5 @@ async def async_remove_entry(
     hass: HomeAssistant, config_entry: ConfigEntry
 ) -> None:
     """Handle removal of an entry."""
-    store = get_store(hass, config_entry.entry_id)
+    store = get_store(hass, config_entry.data.get(CONF_INFO_ID))
     await store.async_remove()

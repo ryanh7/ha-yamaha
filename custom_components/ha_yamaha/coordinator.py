@@ -4,9 +4,13 @@ from datetime import timedelta
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.exceptions import ConfigEntryAuthFailed
-from homeassistant.const import CONF_HOST
-from .rxv import RXV, PlayStatus, PlaybackSupport
+from homeassistant.helpers.entity import DeviceInfo
+
+from .rxv import RXVDeviceinfo, RXV, PlayStatus, PlaybackSupport
+from .utils import get_store
 from .const import (
+    CONF_BASE_URL,
+    CONF_INFO_ID,
     DOMAIN,
 )
 
@@ -33,24 +37,42 @@ class YamahaCoordinator(DataUpdateCoordinator[YamahaData]):
             name=DOMAIN,
             update_interval=timedelta(seconds=2),
         )
-        host = config_entry.data[CONF_HOST]
-        self._rxv: RXV = RXV(hass, host, entry_id=config_entry.entry_id, timeout=3)
+        self.hass = hass
+        self.entry_id = config_entry.entry_id
+        self._base_url = config_entry.data[CONF_BASE_URL]
+        self._info_id = config_entry.data[CONF_INFO_ID]
+        self._rxv: RXV = None
 
-        self.device_info = None
         self.receiver = None
         self._source_list = None
 
         self._source_names = {} #frome config_entry
         self._source_ignore = [] #fronm config_entry
 
+        self.device_info = DeviceInfo(
+            identifiers={(DOMAIN, self.entry_id)}
+        )
+    
+    async def async_setup(self):
+        store = get_store(self.hass, self._info_id)
+        restored = await store.async_load()
+        device = RXVDeviceinfo(**restored)
+        self._rxv = RXV(self.hass, device, self._base_url)
+
+        self.device_info = DeviceInfo(
+            identifiers={(DOMAIN, self.entry_id)},
+            name=device.friendly_name,
+            manufacturer=device.manufacturer,
+            model=device.model_name,
+            serial_number=device.serial_number
+        )
+
     async def _async_update_data(self): 
         try:
             if self.receiver is None:
-                await self._rxv.async_setup()
                 receivers = self._rxv.zone_controllers()
                 self.receiver: RXV = receivers[0]
                 self._zone = self.receiver.zone
-                self.device_info = self.receiver.device_info
 
             basic_status = await self.receiver.async_get_basic_status()
             is_on = basic_status.on

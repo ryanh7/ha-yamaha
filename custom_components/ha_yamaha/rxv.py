@@ -2,23 +2,21 @@ from __future__ import annotations
 
 import asyncio
 import copy
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 import logging
 import re
 import html
 import xml
 from collections import namedtuple
 from math import floor
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import aiohttp
 from defusedxml import cElementTree
 
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.entity import DeviceInfo
 
-from .const import DOMAIN
-from .utils import get_store, get_id_from_udn
+from .utils import get_id_from_udn
 
 from .exceptions import (CommandUnavailable, DescException, MenuUnavailable,
                          MenuActionUnavailable, PlaybackUnavailable,
@@ -143,6 +141,7 @@ LIST_ICON_QUERY = (
 
 @dataclass
 class RXVDeviceinfo:
+    control_url: str
     device_id: str
     friendly_name: str
     manufacturer: str
@@ -158,45 +157,238 @@ class RXVDeviceinfo:
     scenes_number: dict[str, str]
 
 
+def _build_icon_list(desc_xml):
+    icons = [icon for icon in desc_xml.findall(LIST_ICON_QUERY)]
+    icon_data = []
+    for icon in icons:
+        width_elem = icon.find('.//{urn:schemas-upnp-org:device-1-0}width')
+        url_elem = icon.find('.//{urn:schemas-upnp-org:device-1-0}url')
+        
+        if url_elem is not None:
+            width = 0
+            if width_elem is not None:
+                try:
+                    width = int(width_elem.text)
+                except (ValueError, AttributeError):
+                    pass
+            
+            url = url_elem.text
+            icon_data.append((width, url))
+
+    icon_data.sort(key=lambda x: x[0], reverse=True)
+
+    return [url for _, url in icon_data]
+
+def _build_commands(desc_xml):
+    return [item.text.split(",") for cmd in desc_xml.findall('.//Cmd_List/Define') for item in cmd]
+
+def _build_zones(desc_xml):
+    return [
+        e.get("YNC_Tag") for e in desc_xml.findall('.//*[@Func="Subunit"]')
+    ]
+
+def _build_play_methods(desc_xml):
+    source_play_methods = {}
+    
+    # 查找所有具有YNC_Tag属性的元素
+    for source_elem in desc_xml.findall('.//*[@YNC_Tag]'):
+        source = source_elem.get('YNC_Tag')
+        if not source:
+            continue
+
+        play_control = source_elem.find('.//*[@Func="Play_Control"]')
+        if play_control is None:
+            continue
+            
+        # 收集所有Put_1的文本内容作为支持的方法
+        methods = [s.text for s in play_control.findall('.//Put_1') if s.text]
+        if len(methods) == 0:
+            continue
+
+        source_play_methods[source] = methods
+
+    return source_play_methods
+
+def _build_supported_cursor_actions(desc_xml):
+    source_cursor_actions = {}
+    
+    # 查找所有具有YNC_Tag属性的元素
+    for source_elem in desc_xml.findall('.//*[@YNC_Tag]'):
+        source = source_elem.get('YNC_Tag')
+        if not source:
+            continue
+
+        cursor = source_elem.find('.//Menu[@Func="Cursor"]')
+        if cursor is None:
+            continue
+            
+        # 收集所有Put_1的文本内容作为支持的方法
+        actions = [s.text for s in cursor.findall('.//Put_1') if s.text]
+        if len(actions) == 0:
+            continue
+
+        source_cursor_actions[source] = actions
+    
+    return source_cursor_actions
+
+def _build_surround_programs(desc_xml):
+    zone_surround_programs = {}
+
+    for source_xml in desc_xml.findall('.//*[@Func="Subunit"]'):
+        zone = source_xml.get('YNC_Tag')
+        if not zone:
+            continue
+
+        setup = source_xml.find('.//Menu[@Title_1="Setup"]')
+        if setup is None:
+            continue
+
+        surround_programs = []
+        
+        straight = setup.find('.//*[@Title_1="Straight"]/Put_1')
+        if straight is not None:
+            surround_programs.append(STRAIGHT)
+
+        direct = setup.find('.//*[@Title_1="Direct"]/Put_1')
+        if direct is not None:
+            surround_programs.append(DIRECT)
+
+        programs = setup.find('.//*[@Title_1="Program"]/Put_2/Param_1')
+        if programs is not None:
+            supports = programs.findall('.//Direct')
+            for s in supports:
+                surround_programs.append(s.text)
+        
+        zone_surround_programs[zone] = surround_programs
+    
+    return zone_surround_programs
+
+async def _async_request(session, control_url, command, request_text, zone="Main_Zone", zone_cmd=True):
+    if zone_cmd:
+        payload = Zone.format(request_text=request_text, zone=zone)
+    else:
+        payload = request_text
+
+    request_text = YamahaCommand.format(command=command, payload=payload)
+    try:
+        res = await session.post(
+            control_url,
+            data=request_text,
+            headers={"Content-Type": "text/xml"},
+            timeout=aiohttp.ClientTimeout(10)
+        )
+        # releases connection to the pool
+        response = cElementTree.XML(await res.text())
+        if response.get("RC") != "0":
+            _LOGGER.error("Request %s failed with %s",
+                            request_text, res.content)
+            raise ResponseException(res.content)
+        return response
+    except xml.etree.ElementTree.ParseError:
+        _LOGGER.exception("Invalid XML returned for request %s: %s",
+                            request_text, res.content)
+        raise
+
+async def _async_get_inputs(session, control_url):
+    request_text = InputSelItem.format(input_name=GetParam)
+    res = await _async_request(session, control_url, 'GET', request_text)
+    inputs = dict(zip((elt.text
+                                    for elt in res.iter('Param')),
+                                    (elt.text
+                                    for elt in res.iter("Src_Name"))))
+    return inputs
+
+async def _async_get_scenes(session, control_url):
+    scenes = {}
+    res = await _async_request(session, control_url, 'GET', AvailableScenes)
+    scenes_xml = res.find('.//Scene')
+    if scenes_xml is None:
+        return scenes
+
+    for scene in scenes_xml:
+        scenes[scene.text] = scene.tag.replace("_", " ")
+
+    return scenes
+
+async def async_discover_device_info(hass, deivce_desc_url) -> RXVDeviceinfo:
+    session: aiohttp.ClientSession = async_get_clientsession(hass)
+    # 获取设备xml
+    response = await session.get(
+        deivce_desc_url, timeout=aiohttp.ClientTimeout(10)
+    )
+    device_desc_xml = await response.text()
+    if not device_desc_xml:
+        return None, None
+    
+    device_desc_xml = cElementTree.fromstring(device_desc_xml)
+    #TODO: 设备id不一致的时候发出告警
+    udn = device_desc_xml.find(UDN_QUERY).text
+    device_id = get_id_from_udn(udn)
+    manufacturer = device_desc_xml.find(MANUFACTURER_QUERY).text
+    model_name = device_desc_xml.find(MODEL_NAME_QUERY).text
+    friendly_name = device_desc_xml.find(FRIENDLY_NAME_QUERY).text
+    serial_number = device_desc_xml.find(SERIAL_NUMBER_QUERY).text
+
+    base_url = device_desc_xml.find(URL_BASE_QUERY).text
+    control_url_path = device_desc_xml.find(CONTROL_URL_QUERY).text
+    unit_desc_url_path = device_desc_xml.find(UNITDESC_URL_QUERY).text
+
+    icons = _build_icon_list(device_desc_xml)
+
+    # 获取控制描述xml
+    unit_desc_url = urljoin(base_url, unit_desc_url_path)
+    response = await session.get(
+        unit_desc_url, timeout=aiohttp.ClientTimeout(10)
+    )
+    unit_desc_xml = await response.text()
+    if not unit_desc_xml:
+        raise DescException("no desc.xml")
+
+    unit_desc_xml = cElementTree.fromstring(unit_desc_xml)
+
+    zones = _build_zones(unit_desc_xml)
+    commands = _build_commands(unit_desc_xml)
+    zone_surround_programs = _build_surround_programs(unit_desc_xml)
+    source_play_methods = _build_play_methods(unit_desc_xml)
+    source_cursor_actions = _build_supported_cursor_actions(unit_desc_xml)
+
+    # TODO: 改成按zone区分
+    control_url = urljoin(base_url, control_url_path)
+    inputs = await _async_get_inputs(session, control_url)
+    scenes = await _async_get_scenes(session, control_url)
+
+    return RXVDeviceinfo(
+        control_url=control_url_path,
+        device_id=device_id,
+        friendly_name=friendly_name,
+        manufacturer=manufacturer,
+        model_name=model_name,
+        serial_number=serial_number,
+        icons=icons,
+        zones=zones,
+        commands=commands,
+        zone_surround_programs=zone_surround_programs,
+        source_play_methods=source_play_methods,
+        source_cursor_actions=source_cursor_actions,
+        inputs_source=inputs,
+        scenes_number=scenes
+    ), base_url
+
 class RXV(object):
 
-    def __init__(self, hass, host:str,
-                 entry_id: str = None,
+    def __init__(self, hass, device: RXVDeviceinfo, base_url,
                  zone="Main_Zone",
                  timeout=10.0):
         self.hass = hass
-        self.host = host
-        self.entry_id = entry_id
-        self.deivce_desc_url = f'http://{host}:8080/MediaRenderer/desc.xml'
-        self.ctrl_url = f'http://{host}:80/YamahaRemoteControl/ctrl'
-        self.unit_desc_url = f'http://{host}:80/YamahaRemoteControl/desc.xml'
-        self._store = None
+        self.ctrl_url = urljoin(base_url, device.control_url)
         self._session: aiohttp.ClientSession = async_get_clientsession(hass)
         self._http_timeout = aiohttp.ClientTimeout(timeout)
 
         self._zone = zone
 
-        self._device: RXVDeviceinfo | None = None
+        self._device: RXVDeviceinfo = device
 
-        self.icon_list = []
-
-    @property
-    def device_info(self):
-        if self.entry_id is None:
-            return None
-
-        if self._device is None:
-            return DeviceInfo(
-                identifiers={(DOMAIN, self.entry_id)}
-            )
-
-        return DeviceInfo(
-            identifiers={(DOMAIN, self.entry_id)},
-            name=self._device.friendly_name,
-            manufacturer=self._device.manufacturer,
-            model=self._device.model_name,
-            serial_number=self._device.serial_number
-        )
+        self._icon = urljoin(f"http://{urlparse(base_url).hostname}:8080", self._device.icons[0]) if self._device and self._device.icons else None
     
     @property
     def device_id(self):
@@ -212,202 +404,7 @@ class RXV(object):
     
     @property
     def icon(self):
-        return urljoin(f"http://{self.host}:8080", self._device.icons[0]) if self._device and self._device.icons else None
-    
-    async def async_setup(self):
-        if self._store is None and self.entry_id is not None:
-            self._store = get_store(self.hass, self.entry_id)
-            restored = await self._store.async_load()
-            if restored:
-                self._device = RXVDeviceinfo(**restored)
-        
-        if self._device is None:
-            self._device = await self._async_discover_device_info()
-            if self._store is not None:
-                await self._store.async_save(asdict(self._device))
-
-    async def _async_discover_device_info(self) -> RXVDeviceinfo:
-        # 获取设备xml
-        response = await self._session.get(
-            self.deivce_desc_url, timeout=self._http_timeout
-        )
-        device_desc_xml = await response.text()
-        if not device_desc_xml:
-            raise DescException("no device desc xml")
-        
-        device_desc_xml = cElementTree.fromstring(device_desc_xml)
-        #TODO: 设备id不一致的时候发出告警
-        udn = device_desc_xml.find(UDN_QUERY).text
-        device_id = get_id_from_udn(udn)
-        manufacturer = device_desc_xml.find(MANUFACTURER_QUERY).text
-        model_name = device_desc_xml.find(MODEL_NAME_QUERY).text
-        friendly_name = device_desc_xml.find(FRIENDLY_NAME_QUERY).text
-        serial_number = device_desc_xml.find(SERIAL_NUMBER_QUERY).text
-
-        icons = self._build_icon_list(device_desc_xml)
-
-        # 获取控制描述xml
-        response = await self._session.get(
-            self.unit_desc_url, timeout=self._http_timeout
-        )
-        unit_desc_xml = await response.text()
-        if not unit_desc_xml:
-            raise DescException("no desc.xml")
-
-        unit_desc_xml = cElementTree.fromstring(unit_desc_xml)
-
-        zones = self._build_zones(unit_desc_xml)
-        commands = self._build_commands(unit_desc_xml)
-        zone_surround_programs = self._build_surround_programs(unit_desc_xml)
-        source_play_methods = self._build_play_methods(unit_desc_xml)
-        source_cursor_actions = self._build_supported_cursor_actions(unit_desc_xml)
-
-        inputs = await self._async_get_inputs()
-
-        scenes = await self._async_get_scenes()
-
-        return RXVDeviceinfo(
-            device_id=device_id,
-            friendly_name=friendly_name,
-            manufacturer=manufacturer,
-            model_name=model_name,
-            serial_number=serial_number,
-            icons=icons,
-            zones=zones,
-            commands=commands,
-            zone_surround_programs=zone_surround_programs,
-            source_play_methods=source_play_methods,
-            source_cursor_actions=source_cursor_actions,
-            inputs_source=inputs,
-            scenes_number=scenes
-        )
-
-    def _build_icon_list(self, desc_xml):
-        icons = [icon for icon in desc_xml.findall(LIST_ICON_QUERY)]
-        icon_data = []
-        for icon in icons:
-            width_elem = icon.find('.//{urn:schemas-upnp-org:device-1-0}width')
-            url_elem = icon.find('.//{urn:schemas-upnp-org:device-1-0}url')
-            
-            if url_elem is not None:
-                width = 0
-                if width_elem is not None:
-                    try:
-                        width = int(width_elem.text)
-                    except (ValueError, AttributeError):
-                        pass
-                
-                url = url_elem.text
-                icon_data.append((width, url))
-
-        icon_data.sort(key=lambda x: x[0], reverse=True)
-
-        return [url for _, url in icon_data]
-
-    def _build_commands(self, desc_xml):
-        return [item.text.split(",") for cmd in desc_xml.findall('.//Cmd_List/Define') for item in cmd]
-
-    def _build_zones(self, desc_xml):
-        return [
-            e.get("YNC_Tag") for e in desc_xml.findall('.//*[@Func="Subunit"]')
-        ]
-
-    def _build_play_methods(self, desc_xml):
-        source_play_methods = {}
-        
-        # 查找所有具有YNC_Tag属性的元素
-        for source_elem in desc_xml.findall('.//*[@YNC_Tag]'):
-            source = source_elem.get('YNC_Tag')
-            if not source:
-                continue
-
-            play_control = source_elem.find('.//*[@Func="Play_Control"]')
-            if play_control is None:
-                continue
-                
-            # 收集所有Put_1的文本内容作为支持的方法
-            methods = [s.text for s in play_control.findall('.//Put_1') if s.text]
-            if len(methods) == 0:
-                continue
-
-            source_play_methods[source] = methods
-
-        return source_play_methods
-    
-    def _build_supported_cursor_actions(self, desc_xml):
-        source_cursor_actions = {}
-        
-        # 查找所有具有YNC_Tag属性的元素
-        for source_elem in desc_xml.findall('.//*[@YNC_Tag]'):
-            source = source_elem.get('YNC_Tag')
-            if not source:
-                continue
-
-            cursor = source_elem.find('.//Menu[@Func="Cursor"]')
-            if cursor is None:
-                continue
-                
-            # 收集所有Put_1的文本内容作为支持的方法
-            actions = [s.text for s in cursor.findall('.//Put_1') if s.text]
-            if len(actions) == 0:
-                continue
-
-            source_cursor_actions[source] = actions
-        
-        return source_cursor_actions
-    
-    def _build_surround_programs(self, desc_xml):
-        zone_surround_programs = {}
-
-        for source_xml in desc_xml.findall('.//*[@Func="Subunit"]'):
-            zone = source_xml.get('YNC_Tag')
-            if not zone:
-                continue
-
-            setup = source_xml.find('.//Menu[@Title_1="Setup"]')
-            if setup is None:
-                continue
-
-            surround_programs = []
-            
-            straight = setup.find('.//*[@Title_1="Straight"]/Put_1')
-            if straight is not None:
-                surround_programs.append(STRAIGHT)
-
-            direct = setup.find('.//*[@Title_1="Direct"]/Put_1')
-            if direct is not None:
-                surround_programs.append(DIRECT)
-
-            programs = setup.find('.//*[@Title_1="Program"]/Put_2/Param_1')
-            if programs is not None:
-                supports = programs.findall('.//Direct')
-                for s in supports:
-                    surround_programs.append(s.text)
-            
-            zone_surround_programs[zone] = surround_programs
-        
-        return zone_surround_programs
-    
-    async def _async_get_inputs(self):
-        request_text = InputSelItem.format(input_name=GetParam)
-        res = await self._async_request('GET', request_text)
-        inputs = dict(zip((elt.text
-                                        for elt in res.iter('Param')),
-                                        (elt.text
-                                        for elt in res.iter("Src_Name"))))
-        return inputs
-    
-    async def _async_get_scenes(self):
-        scenes = {}
-        res = await self._async_request('GET', AvailableScenes)
-        scenes_xml = res.find('.//Scene')
-        if scenes_xml is None:
-            return scenes
-
-        for scene in scenes_xml:
-            scenes[scene.text] = scene.tag.replace("_", " ")
-
-        return scenes
+        return self._icon
     
     def get_inputs(self):
         return self._device.inputs_source
