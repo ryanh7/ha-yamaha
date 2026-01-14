@@ -52,7 +52,8 @@ class BasicStatus(NamedTuple):
     on: bool
     volume: float
     mute: bool
-    input: str
+    input_source: str
+    surround_program: str
 
 
 class PlayStatus(NamedTuple):
@@ -282,9 +283,7 @@ def _build_surround_programs(desc_xml):
 
         programs = setup.find('.//*[@Title_1="Program"]/Put_2/Param_1')
         if programs is not None:
-            supports = programs.findall(".//Direct")
-            for s in supports:
-                surround_programs.append(s.text)
+            surround_programs.extend([s.text for s in programs.findall(".//Direct")])
 
         zone_surround_programs[zone] = surround_programs
 
@@ -353,6 +352,7 @@ async def async_discover_device_info(hass, deivce_desc_url) -> RXVDeviceInfo:
     if not device_desc_xml:
         return None, None
 
+    _LOGGER.error(device_desc_xml)
     device_desc_xml = cElementTree.fromstring(device_desc_xml)
     # TODO: 设备id不一致的时候发出告警
     udn = device_desc_xml.find(UDN_QUERY).text
@@ -419,15 +419,13 @@ class RXV:
         self._session: aiohttp.ClientSession = async_get_clientsession(hass)
         self._http_timeout = aiohttp.ClientTimeout(timeout)
 
-        self._zone = zone
+        self._zone = (
+            device.zones[0] if device.zones and zone not in device.zones else zone
+        )
 
         self._device: RXVDeviceInfo = device
 
-        self._icon = (
-            urljoin(f"http://{urlparse(base_url).hostname}:8080", self._device.icons[0])
-            if self._device and self._device.icons
-            else None
-        )
+        self._icon = self._device.icons[0] if self._device.icons else None
 
     @property
     def device_id(self):
@@ -478,12 +476,18 @@ class RXV:
     async def async_get_basic_status(self):
         response = await self._async_request("GET", BasicStatusGet)
         on = response.find(f"{self.zone}/Basic_Status/Power_Control/Power").text == "On"
-        inp = response.find(f"{self.zone}/Basic_Status/Input/Input_Sel").text
+        input_source = response.find(f"{self.zone}/Basic_Status/Input/Input_Sel").text
         mute = response.find(f"{self.zone}/Basic_Status/Volume/Mute").text == "On"
         volume = response.find(f"{self.zone}/Basic_Status/Volume/Lvl/Val").text
         volume = float(volume) / 10.0
 
-        return BasicStatus(on, volume, mute, inp)
+        surround_program = (
+            DIRECT if response.find(f"{self.zone}/Basic_Status/Sound_Video/Direct/Mode").text == "On"
+            else STRAIGHT if response.find(f"{self.zone}/Basic_Status/Surround/Program_Sel/Current/Straight").text == "On"
+            else response.find(f"{self.zone}/Basic_Status/Surround/Program_Sel/Current/Sound_Program").text
+        )
+
+        return BasicStatus(on, volume, mute, input_source, surround_program)
 
     async def async_is_on(self) -> bool:
         request_text = PowerControl.format(state=GetParam)
@@ -514,6 +518,25 @@ class RXV:
         """
 
         src_name = await self._async_get_src_name(input_source)
+
+        return PlaybackSupport(
+            play=self.supports_play_method(src_name, "Play"),
+            pause=self.supports_play_method(src_name, "Pause"),
+            stop=self.supports_play_method(src_name, "Stop"),
+            skip_f=self.supports_play_method(src_name, "Skip Fwd"),
+            skip_r=self.supports_play_method(src_name, "Skip Rev"),
+        )
+
+    def get_playback_support(self, input_source):
+        """Get playback support as bit vector.
+
+        In order to expose features correctly in Home Assistant, we
+        need to make it possible to understand what play operations a
+        source supports. This builds us a Home Assistant compatible
+        bit vector from the desc.xml for the specified source.
+        """
+
+        src_name = self._get_src_name(input_source)
 
         return PlaybackSupport(
             play=self.supports_play_method(src_name, "Play"),
@@ -715,9 +738,7 @@ class RXV:
                 return html.unescape(tag.text).strip()
         return ""
 
-    async def _async_get_src_name(self, cur_input=None):
-        if cur_input is None:
-            cur_input = await self.async_get_input()
+    def _get_src_name(self, cur_input):
         if cur_input not in self._device.inputs_source:
             return None, None
         if cur_input.upper().startswith("HDMI"):
@@ -727,6 +748,11 @@ class RXV:
             # will be enabled.
             return self.zone, cur_input
         return self._device.inputs_source.get(cur_input), cur_input
+
+    async def _async_get_src_name(self, cur_input=None):
+        if cur_input is None:
+            cur_input = await self.async_get_input()
+        return self._get_src_name(cur_input)
 
     async def async_get_play_status(self, input_source=None):
 

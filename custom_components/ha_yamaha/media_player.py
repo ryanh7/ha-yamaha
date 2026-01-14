@@ -112,9 +112,7 @@ class YamahaMediaPlayer(
     @property
     def source_list(self):
         """List of available input sources."""
-        if (data := self.coordinator.data) is None:
-            return None
-        return data.source_list
+        return self.coordinator.source_list
 
     @property
     def sound_mode(self):
@@ -126,9 +124,7 @@ class YamahaMediaPlayer(
     @property
     def sound_mode_list(self):
         """Return the current sound mode."""
-        if (data := self.coordinator.data) is None:
-            return None
-        return data.sound_mode_list
+        return self.coordinator.sound_mode_list
 
     @property
     def supported_features(self):
@@ -139,7 +135,7 @@ class YamahaMediaPlayer(
         if data is None:
             return supported_features
 
-        if data.sound_mode_list:
+        if self.coordinator.sound_mode_list:
             supported_features |= MediaPlayerEntityFeature.SELECT_SOUND_MODE
 
         if data.playback_support is None:
