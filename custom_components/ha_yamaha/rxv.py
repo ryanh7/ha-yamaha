@@ -355,7 +355,6 @@ async def async_discover_device_info(
         if not device_desc_xml:
             return None, None
 
-        _LOGGER.error(device_desc_xml)
         device_desc_xml = cElementTree.fromstring(device_desc_xml)
         # TODO: 设备id不一致的时候发出告警
         udn = device_desc_xml.find(UDN_QUERY).text
