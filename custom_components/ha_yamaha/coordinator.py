@@ -4,7 +4,6 @@ import logging
 from urllib.parse import urljoin, urlparse
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
@@ -140,8 +139,6 @@ class YamahaCoordinator(DataUpdateCoordinator[YamahaData]):
                 sound_mode=self._mode_names.get(sound_mode, sound_mode),
                 play_status=play_status,
             )
-        except (ConfigEntryAuthFailed, UpdateFailed):
-            raise
         except Exception as error:
             raise UpdateFailed(error) from error
 

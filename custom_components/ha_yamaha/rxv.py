@@ -344,69 +344,76 @@ async def _async_get_scenes(session, control_url):
     return scenes
 
 
-async def async_discover_device_info(hass, deivce_desc_url) -> RXVDeviceInfo:
-    session: aiohttp.ClientSession = async_get_clientsession(hass)
-    # 获取设备xml
-    response = await session.get(deivce_desc_url, timeout=aiohttp.ClientTimeout(10))
-    device_desc_xml = await response.text()
-    if not device_desc_xml:
+async def async_discover_device_info(
+    hass, deivce_desc_url
+) -> tuple[RXVDeviceInfo | None, str | None]:
+    try:
+        session: aiohttp.ClientSession = async_get_clientsession(hass)
+        # 获取设备xml
+        response = await session.get(deivce_desc_url, timeout=aiohttp.ClientTimeout(10))
+        device_desc_xml = await response.text()
+        if not device_desc_xml:
+            return None, None
+
+        _LOGGER.error(device_desc_xml)
+        device_desc_xml = cElementTree.fromstring(device_desc_xml)
+        # TODO: 设备id不一致的时候发出告警
+        udn = device_desc_xml.find(UDN_QUERY).text
+        device_id = get_id_from_udn(udn)
+        manufacturer = device_desc_xml.find(MANUFACTURER_QUERY).text
+        model_name = device_desc_xml.find(MODEL_NAME_QUERY).text
+        friendly_name = device_desc_xml.find(FRIENDLY_NAME_QUERY).text
+        serial_number = device_desc_xml.find(SERIAL_NUMBER_QUERY).text
+
+        base_url = device_desc_xml.find(URL_BASE_QUERY).text
+        control_url_path = device_desc_xml.find(CONTROL_URL_QUERY).text
+        unit_desc_url_path = device_desc_xml.find(UNITDESC_URL_QUERY).text
+
+        icons = _build_icon_list(device_desc_xml)
+
+        # 获取控制描述xml
+        unit_desc_url = urljoin(base_url, unit_desc_url_path)
+        response = await session.get(unit_desc_url, timeout=aiohttp.ClientTimeout(10))
+        unit_desc_xml = await response.text()
+        if not unit_desc_xml:
+            _LOGGER.error("missed unit desc xml")
+            return None, None
+
+        unit_desc_xml = cElementTree.fromstring(unit_desc_xml)
+
+        zones = _build_zones(unit_desc_xml)
+        commands = _build_commands(unit_desc_xml)
+        zone_surround_programs = _build_surround_programs(unit_desc_xml)
+        source_play_methods = _build_play_methods(unit_desc_xml)
+        source_cursor_actions = _build_supported_cursor_actions(unit_desc_xml)
+
+        # TODO: 改成按zone区分
+        control_url = urljoin(base_url, control_url_path)
+        inputs = await _async_get_inputs(session, control_url)
+        scenes = await _async_get_scenes(session, control_url)
+
+        return (
+            RXVDeviceInfo(
+                control_url=control_url_path,
+                device_id=device_id,
+                friendly_name=friendly_name,
+                manufacturer=manufacturer,
+                model_name=model_name,
+                serial_number=serial_number,
+                icons=icons,
+                zones=zones,
+                commands=commands,
+                zone_surround_programs=zone_surround_programs,
+                source_play_methods=source_play_methods,
+                source_cursor_actions=source_cursor_actions,
+                inputs_source=inputs,
+                scenes_number=scenes,
+            ),
+            base_url,
+        )
+    except Exception:
+        _LOGGER.exception()
         return None, None
-
-    _LOGGER.error(device_desc_xml)
-    device_desc_xml = cElementTree.fromstring(device_desc_xml)
-    # TODO: 设备id不一致的时候发出告警
-    udn = device_desc_xml.find(UDN_QUERY).text
-    device_id = get_id_from_udn(udn)
-    manufacturer = device_desc_xml.find(MANUFACTURER_QUERY).text
-    model_name = device_desc_xml.find(MODEL_NAME_QUERY).text
-    friendly_name = device_desc_xml.find(FRIENDLY_NAME_QUERY).text
-    serial_number = device_desc_xml.find(SERIAL_NUMBER_QUERY).text
-
-    base_url = device_desc_xml.find(URL_BASE_QUERY).text
-    control_url_path = device_desc_xml.find(CONTROL_URL_QUERY).text
-    unit_desc_url_path = device_desc_xml.find(UNITDESC_URL_QUERY).text
-
-    icons = _build_icon_list(device_desc_xml)
-
-    # 获取控制描述xml
-    unit_desc_url = urljoin(base_url, unit_desc_url_path)
-    response = await session.get(unit_desc_url, timeout=aiohttp.ClientTimeout(10))
-    unit_desc_xml = await response.text()
-    if not unit_desc_xml:
-        raise DescException("no desc.xml")
-
-    unit_desc_xml = cElementTree.fromstring(unit_desc_xml)
-
-    zones = _build_zones(unit_desc_xml)
-    commands = _build_commands(unit_desc_xml)
-    zone_surround_programs = _build_surround_programs(unit_desc_xml)
-    source_play_methods = _build_play_methods(unit_desc_xml)
-    source_cursor_actions = _build_supported_cursor_actions(unit_desc_xml)
-
-    # TODO: 改成按zone区分
-    control_url = urljoin(base_url, control_url_path)
-    inputs = await _async_get_inputs(session, control_url)
-    scenes = await _async_get_scenes(session, control_url)
-
-    return (
-        RXVDeviceInfo(
-            control_url=control_url_path,
-            device_id=device_id,
-            friendly_name=friendly_name,
-            manufacturer=manufacturer,
-            model_name=model_name,
-            serial_number=serial_number,
-            icons=icons,
-            zones=zones,
-            commands=commands,
-            zone_surround_programs=zone_surround_programs,
-            source_play_methods=source_play_methods,
-            source_cursor_actions=source_cursor_actions,
-            inputs_source=inputs,
-            scenes_number=scenes,
-        ),
-        base_url,
-    )
 
 
 class RXV:
@@ -463,7 +470,7 @@ class RXV:
             # releases connection to the pool
             response = cElementTree.XML(await res.text())
             if response.get("RC") != "0":
-                _LOGGER.error("Request %s failed with %s", request_text, res.content)
+                _LOGGER.debug("Request %s failed with %s", request_text, res.content)
                 raise ResponseException(res.content)
 
             return response  # noqa: TRY300
@@ -482,9 +489,19 @@ class RXV:
         volume = float(volume) / 10.0
 
         surround_program = (
-            DIRECT if response.find(f"{self.zone}/Basic_Status/Sound_Video/Direct/Mode").text == "On"
-            else STRAIGHT if response.find(f"{self.zone}/Basic_Status/Surround/Program_Sel/Current/Straight").text == "On"
-            else response.find(f"{self.zone}/Basic_Status/Surround/Program_Sel/Current/Sound_Program").text
+            DIRECT
+            if response.find(f"{self.zone}/Basic_Status/Sound_Video/Direct/Mode").text
+            == "On"
+            else (
+                STRAIGHT
+                if response.find(
+                    f"{self.zone}/Basic_Status/Surround/Program_Sel/Current/Straight"
+                ).text
+                == "On"
+                else response.find(
+                    f"{self.zone}/Basic_Status/Surround/Program_Sel/Current/Sound_Program"
+                ).text
+            )
         )
 
         return BasicStatus(on, volume, mute, input_source, surround_program)
