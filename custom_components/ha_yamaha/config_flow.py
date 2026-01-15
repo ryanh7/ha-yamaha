@@ -45,7 +45,7 @@ class YamahaFlowHandler(ConfigFlow, domain=DOMAIN):
             await self.async_set_unique_id(f"{DOMAIN}.{device_id}")
             self._abort_if_unique_id_configured()
 
-            info_id = await async_save_store(self.hass, self._device)
+            info_id = await async_save_store(self.hass, rxv_device_info)
             data = {
                 CONF_SSDP_LOCATION: ssdp_location,
                 CONF_BASE_URL: base_url,
